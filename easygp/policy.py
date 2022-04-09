@@ -181,16 +181,11 @@ class TargetPerformance:
     """A special helper standalone class for measuring the target
     performance."""
 
-    @property
-    def target(self):
-        return self._target
-
     def set_target(self, target):
         self._policy.set_target(target)
 
     def __init__(self):
         self._policy = ExploitationTargetPolicy()
-        self._target = None
 
     def __call__(self, gp, truth, n_restarts=10):
         """Finds the target performance.
@@ -212,9 +207,3 @@ class TargetPerformance:
         estimated = self._policy.suggest(gp, n_restarts=n_restarts)
         gt = truth(estimated)
         return -self._policy.objective(gt)
-
-
-class MultiTargetPolicy:
-    """Summary"""
-
-    pass
