@@ -303,6 +303,13 @@ FIT_WARNING = "Decreasing the bound and calling fit again may find a better"
 
 
 class Campaign:
+    """Used for running optimization campaigns given some data. While choosing
+    a policy is ultimately up to the user, it has been shown that running
+    campaigns on minimal data can be useful in helping to choose an optimal
+    policy given some objective. This class allows the user to rapidly test
+    different policies (from easygp.policy) and evaluate their effectiveness
+    given some initial dataset."""
+
     @property
     def gp(self):
         return self._gp
@@ -353,10 +360,10 @@ class Campaign:
         X : np.ndarray
             Initial feature data. Should be of shape (n x n_features).
         y : np.ndarray
-            Initial target data. Should be of shape (n x 1).
+            Initial target data. Should be of shape (n x n_targets).
         alpha : np.ndarray
             Initial target noise (standard deviation). Should be of shape
-            (n x 1).
+            (n x n_targets), or a float.
         bounds : list of tuple
             The lower and upper bounds for each dimension. Should be of length
             of the number of features in the input data.
@@ -371,9 +378,12 @@ class Campaign:
             The randomstate for the underlying Gaussian Process instance that
             is treated as the ground truth.
         gp_kwargs : dict, optional
-            Keyword arguments passed to the Gaussian Process.
+            Keyword arguments passed to the
+            AutoscalingGaussianProcessRegressor.
         """
 
+        # Set every input as a private attribute. Public attributes are handled
+        # via properties
         for key, value in locals().items():
             if key != "self":
                 setattr(self, f"_{key}", value)
@@ -407,12 +417,12 @@ class Campaign:
         for warn in caught_warnings:
             if FIT_WARNING in str(warn.message):
                 logger.warning(
-                    f"Model bad fit: {self.gp._gp.kernel_} fit in {dt:.01} s"
+                    f"Model (bad fit) {self.gp._gp.kernel_} fit in {dt:.01} s"
                 )
                 return
         logger.info(f"\tModel {self.gp._gp.kernel_} fit in {dt:.01} s")
 
-    def update(self, X, y, alpha):
+    def _update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
         assumed to be unscaled.
 
@@ -435,6 +445,19 @@ class Campaign:
         ----------
         n : int, optional
             The number of experiments to run.
+        n_restarts : int, optional
+            The number of times the optimizer should be restarted in a new
+            location while maximizing the acquisition function.
+        ignore_criterion : float, optional
+            This number determines when to ignore a suggested data point. If
+            the mean absolute difference between any value currently in the
+            campaign.X dataset, and the suggested value is less than this
+            number, the suggested point will not be added to the campaign data.
+
+        Returns
+        -------
+        list of float
+            A list of the performance values acquired during the campaign.
         """
 
         performance = []
@@ -484,7 +507,7 @@ class Campaign:
             )
 
             # Update the datasets stored in _X, _y, and _alpha
-            self.update(new_X, new_y, avg_noise)
+            self._update(new_X, new_y, avg_noise)
 
             # Refit on the new data
             self.fit()
