@@ -1,12 +1,14 @@
 from contextlib import contextmanager
 from copy import deepcopy
+from time import time
+import warnings
 
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor as sklearn_gp
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from tqdm import tqdm
 
+from easygp import logger
 from easygp.policy import TargetPerformance, RequiresYbest, RequiresTarget
 
 
@@ -73,10 +75,6 @@ class AutoscalingGaussianProcessRegressor:
         """
 
         X = X.reshape(-1, self._n_features)
-        self._soft_input_bounds = [
-            X.min(axis=0).tolist(),
-            X.max(axis=0).tolist(),
-        ]
         if self._scale_X:
             X = self._Xscaler.fit_transform(X)
         y = self._yscaler.fit_transform(y.reshape(-1, 1))
@@ -146,6 +144,9 @@ class GPSampler:
                 for xx in x
             ]
         )
+
+
+FIT_WARNING = "Decreasing the bound and calling fit again may find a better"
 
 
 class Campaign:
@@ -224,7 +225,6 @@ class Campaign:
             if key != "self":
                 setattr(self, f"_{key}", value)
 
-        self._gp = None
         self._iteration = -1
 
         # For campaigning we must always have some target value, but the policy
@@ -243,11 +243,21 @@ class Campaign:
     def fit(self):
         """Fits the internal Gaussian Process using the current stored data."""
 
+        t0 = time()
         self._gp = AutoscalingGaussianProcessRegressor(
             bounds=self._bounds, gp_kwargs=self._gp_kwargs
         )
-        self._gp.fit(self._X, self._y, self._alpha)
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            self._gp.fit(self._X, self._y, self._alpha)
         self._iteration += 1
+        dt = time() - t0
+        for warn in caught_warnings:
+            if FIT_WARNING in str(warn.message):
+                logger.warning(
+                    f"Model bad fit: {self.gp._gp.kernel_} fit in {dt:.01} s"
+                )
+                return
+        logger.info(f"\tModel {self.gp._gp.kernel_} fit in {dt:.01} s")
 
     def update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
@@ -265,7 +275,7 @@ class Campaign:
         self._y = np.concatenate([self._y, y], axis=0)
         self._alpha = np.concatenate([self._alpha, alpha], axis=0)
 
-    def run(self, n=10, n_restarts=10):
+    def run(self, n=10, n_restarts=10, ignore_criterion=1e-5):
         """Runs the campaign.
 
         Parameters
@@ -275,24 +285,44 @@ class Campaign:
         """
 
         performance = []
+        counter = 0
 
-        for n in tqdm(range(n)):
+        logger.info(f"Beginning campaign (n={n}) with target {self.target}")
+        logger.info(f"Policy is {self._policy.__class__.__name__}")
+
+        while counter < n:
+
+            logger.info(f"Beginning iteration {counter:03}")
 
             # Start with setting ybest if needed
             if isinstance(self._policy, RequiresYbest):
-                y_best = self._policy.objective(self._y)
+                to_max = self._policy.objective(self._y)
+                y_best = self._y[np.argmax(to_max)].item()
                 self._policy.set_ybest(y_best)
+                logger.info(f"\ty-best set to {y_best:.02f}")
 
             # Suggest a new point
             new_X = self._policy.suggest(self._gp, n_restarts)
             new_X = new_X.reshape(-1, self._gp.n_features)
 
+            diff = np.abs(self.X - new_X).sum(axis=1) < ignore_criterion
+            if diff.sum() > 0:
+                logger.warning(
+                    f"\tProposed point {new_X} too close to existing data. "
+                    "Ignoring."
+                )
+                p = self._performance_func(self._gp, self._truth, n_restarts)
+                performance.append(p.item())
+                counter += 1
+                continue
+
             # Get the performance given this new point
             p = self._performance_func(self._gp, self._truth, n_restarts)
-            performance.append(p)
+            performance.append(p.item())
 
             # Get the new truth result for the suggested X value
             new_y = self._truth(new_X)
+            logger.info(f"\ty-value of proposed points {new_y}")
 
             # As for noise, use the average in the dataset plus/minus one
             # standard deviation
@@ -305,5 +335,8 @@ class Campaign:
 
             # Refit on the new data
             self.fit()
+
+            # Increment the counter
+            counter += 1
 
         return performance
