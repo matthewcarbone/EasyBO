@@ -60,6 +60,9 @@ class AutoscalingGaussianProcessRegressor:
 
     @contextmanager
     def disable_scale_X(self):
+        """Context manager that disables the scaling of the input variable
+        X."""
+
         self._scale_X = False
         try:
             yield None
@@ -120,6 +123,25 @@ class AutoscalingGaussianProcessRegressor:
             self._gps.append(gp)
 
     def predict(self, X, return_std=True):
+        """Runs the predict operation on the Gaussian Processes. Two items are
+        always returned, the mean and either the standard deviation or
+        covariance matrix.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Input feature array of shape N x N_features.
+        return_std : bool, optional
+            If True, returns the standard deviation of the predictor ensemble.
+            Else, returns the covariance matrix.
+
+        Returns
+        -------
+        tuple
+            The mean prediction and either the standard deviation or covariance
+            matrix.
+        """
+
         X = X.reshape(-1, self._n_features)
         if self._scale_X:
             X = self._Xscaler.transform(X)
@@ -149,22 +171,26 @@ class AutoscalingGaussianProcessRegressor:
 
         return pred, std_or_cov
 
-    def sample_y(self, X, n_samples=10, randomstate=0):
-        """Summary
+    def sample_y(self, X, n_samples=1, randomstate=0):
+        """Samples a single instance of the Gaussian Processes.
 
         Parameters
         ----------
-        X : TYPE
-            Description
+        X : np.ndarray
+            Input feature array of shape N x N_features.
         n_samples : int, optional
-            Description
+            The number of random samples to take from the Gaussian Processes.
+            Default is 1.
         randomstate : int, optional
-            Description
+            The random state which ensures reproducibility. Each unique number
+            will produce a different samlple. Default is 0.
 
         Returns
         -------
-        TYPE
-            Description
+        np.ndarray
+            The resultant samples. Will be of shape
+            len(X) x num_targets x num_samples if num_samples > 1, else
+            just len(X) x num_targets.
         """
 
         y_mean, y_cov = self.predict(X, return_std=False)
@@ -172,24 +198,65 @@ class AutoscalingGaussianProcessRegressor:
         for ii in range(len(self._gps)):
             np.random.seed(randomstate)
             samples.append(
-                np.array(
-                    [
-                        np.random.multivariate_normal(
-                            y_mean[:, ii], y_cov[ii], n_samples
-                        ).T.squeeze()
-                        for ii in range(len(self._gps))
-                    ]
-                )
+                np.random.multivariate_normal(
+                    y_mean[:, ii], y_cov[ii], n_samples
+                ).T.squeeze()
             )
         samples = np.array(samples)
         if n_samples > 1:
             return samples.swapaxes(0, 1)
         return samples.T
 
+    def sample_y_reproducibly(self, X, n_samples=1, randomstate=0):
+        """There is a subtlety when sampling from the Gaussian Process
+        posterior that must be accounted for when using different sampling
+        grids.
+
+        .. warning::
+
+            Even for the same random state, different input grids (X) will
+            produce different samples from the posterior if using the sklearn
+            `sample_y` method. This is likely due to how the random sampling
+            works under the hood in sklearn.
+
+        Here, we fix the issue by explicitly setting the random state to the
+        same value every time a new point x is sampled. This is slightly less
+        efficient, but does fix the problem.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Input feature array of shape N x N_features.
+        n_samples : int, optional
+            The number of random samples to take from the Gaussian Processes.
+            Default is 1.
+        randomstate : int, optional
+            The random state which ensures reproducibility. Each unique number
+            will produce a different samlple. Default is 0.
+
+        Returns
+        -------
+        np.ndarray
+            The resultant samples. Will be of shape
+            len(X) x num_targets x num_samples if num_samples > 1, else
+            just len(X) x num_targets.
+        """
+
+        arr = np.array(
+            [self.sample_y(xx, n_samples, randomstate).squeeze() for xx in X]
+        )
+        if n_samples > 1:
+            return arr.swapaxes(1, 2)
+        return arr
+
 
 class GPSampler:
     """A method for deterministically sampling from a single instance of a
     Gaussian Process."""
+
+    @property
+    def gp(self):
+        return self._gp
 
     def __init__(self, gp, randomstate=None):
         """Initializes the class with a Gaussian Process and random state
@@ -208,6 +275,7 @@ class GPSampler:
         # Train nearest neighbor regressor on samples over dense grid
         self._gp = gp
         self.n_features = gp.n_features
+        self.n_targets = gp.n_targets
         self.randomstate = randomstate
 
     def __call__(self, x):
@@ -224,12 +292,10 @@ class GPSampler:
             The samples.
         """
 
-        x = x.reshape(-1, self.n_features)
-        return np.array(
-            [
-                self._gp.sample_y(xx, n_samples=1, randomstate=self.randomstate)
-                for xx in x
-            ]
+        return self._gp.sample_y_reproducibly(
+            x.reshape(-1, self.n_features),
+            n_samples=1,
+            randomstate=self.randomstate,
         )
 
 
