@@ -4,6 +4,7 @@ from time import time
 import warnings
 
 import numpy as np
+import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor as sklearn_gp
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -30,8 +31,12 @@ class AutoscalingGaussianProcessRegressor:
         self._n_features = x
 
     @property
-    def gp(self):
-        return self._gp
+    def n_targets(self):
+        return self._n_targets
+
+    @property
+    def gps(self):
+        return self._gps
 
     @property
     def bounds(self):
@@ -41,13 +46,15 @@ class AutoscalingGaussianProcessRegressor:
         self,
         *,
         bounds,
+        n_targets=1,
         gp_kwargs={"kernel": RBF(length_scale=1.0), "n_restarts_optimizer": 10},
     ):
         self._n_features = len(bounds)
+        self._n_targets = n_targets
         self._bounds = bounds
         self._Xscaler = MinMaxScaler(feature_range=(0.0, 1.0))
         self._yscaler = StandardScaler()
-        self._gp = None
+        self._gps = None
         self._gp_kwargs = gp_kwargs
         self._scale_X = True
 
@@ -59,45 +66,125 @@ class AutoscalingGaussianProcessRegressor:
         finally:
             self._scale_X = True
 
-    def fit(self, X, y, alpha=1e-10, **kwargs):
+    def fit(self, X, y, alpha=1e-5):
+        """Fits independent Gaussian Process(es). Will raise a warning if
+        the correlation coefficients^2 between any pair of targets is > 0.95.
+        This would imply highly correlated targets and, simply put, it's not
+        productive to train two GP's when one will probably suffice.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Features to fit on. Of shape N x N_features.
+        y : np.ndarray
+            Targets to fit multiple, independent GPs on. Of shape
+            N x N_targets.
+        alpha : float or np.ndarray, optional
+            Noise (standard deviation), of shape N x N_targets or is a float
+            (same noise for every target). Default is 1e-5 (to prevent
+            numerical instability during the GP fitting process).
+        """
+
+        if y.shape[1] != self._n_targets:
+            logger.error(
+                f"Target array shape {y.shape} incompatible with provided "
+                f"number of targets: {self._n_targets}"
+            )
+            return
+
+        self._gps = []
+
+        X = X.reshape(-1, self._n_features)
+        if self._scale_X:
+            X = self._Xscaler.fit_transform(X)
+        y = self._yscaler.fit_transform(y.reshape(-1, self._n_targets))
+        alpha = alpha / self._yscaler.scale_
+
+        if y.shape[1] > 1:
+            corr = pd.DataFrame(y).corr().to_numpy() ** 2 - np.eye(y.shape[1])
+            if np.any(corr > 0.95):
+                logger.warning(
+                    "Correlation coefficient between at least one pair of "
+                    "targets is greater than 0.95."
+                )
+
+        for target_index in range(y.shape[1]):
+            _y = y[:, target_index].squeeze()
+            if isinstance(alpha, (float, int)):
+                _alpha = alpha
+            else:
+                _alpha = alpha.copy().reshape(-1, self._n_targets)
+                _alpha = _alpha[:, target_index].squeeze()
+            gp = sklearn_gp(alpha=_alpha**2, **self._gp_kwargs)
+            gp.fit(X, _y)
+            self._gps.append(gp)
+
+    def predict(self, X, return_std=True):
+        X = X.reshape(-1, self._n_features)
+        if self._scale_X:
+            X = self._Xscaler.transform(X)
+
+        pred = []
+        std_or_cov = []
+
+        for gp in self._gps:
+            _pred, _std_or_cov = gp.predict(X, return_std, not return_std)
+            pred.append(_pred)
+            std_or_cov.append(_std_or_cov)
+
+        pred = np.array(pred).T
+
+        if return_std:
+            std_or_cov = np.array(std_or_cov).T
+            std_or_cov = std_or_cov * self._yscaler.scale_
+
+        # Return a list of covariance matrices in that case
+        else:
+            std_or_cov = [
+                xx * self._yscaler.scale_[ii]
+                for ii, xx in enumerate(std_or_cov)
+            ]
+
+        pred = self._yscaler.inverse_transform(pred)
+
+        return pred, std_or_cov
+
+    def sample_y(self, X, n_samples=10, randomstate=0):
         """Summary
 
         Parameters
         ----------
         X : TYPE
             Description
-        y : TYPE
+        n_samples : int, optional
             Description
-        alpha : float, optional
+        randomstate : int, optional
             Description
-        **kwargs
+
+        Returns
+        -------
+        TYPE
             Description
         """
 
-        X = X.reshape(-1, self._n_features)
-        if self._scale_X:
-            X = self._Xscaler.fit_transform(X)
-        y = self._yscaler.fit_transform(y.reshape(-1, 1))
-        y = y.squeeze()
-        alpha = alpha / self._yscaler.scale_
-        self._gp = sklearn_gp(alpha=(alpha**2).squeeze(), **self._gp_kwargs)
-        self._gp.fit(X, y)
-
-    def predict(self, X, return_std=True):
-        X = X.reshape(-1, self._n_features)
-        if self._scale_X:
-            X = self._Xscaler.transform(X)
-        pred, std_or_cov = self._gp.predict(X, return_std, not return_std)
-        pred = self._yscaler.inverse_transform(pred)
-        std_or_cov = std_or_cov * self._yscaler.scale_
-        return pred, std_or_cov
-
-    def sample_y(self, X, n_samples=10, randomstate=0):
-        np.random.seed(randomstate)
         y_mean, y_cov = self.predict(X, return_std=False)
-        return np.random.multivariate_normal(
-            y_mean, y_cov, n_samples
-        ).T.squeeze()
+        samples = []
+        for ii in range(len(self._gps)):
+            np.random.seed(randomstate)
+            samples.append(
+                np.array(
+                    [
+                        np.random.multivariate_normal(
+                            y_mean[:, ii], y_cov[ii], n_samples
+                        ).T.squeeze()
+                        for ii in range(len(self._gps))
+                    ]
+                )
+            )
+        samples = np.array(samples)
+        if n_samples > 1:
+            return samples.swapaxes(0, 1)
+        return samples.T
 
 
 class GPSampler:
