@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+import sys
 
 import numpy as np
 from scipy.optimize import minimize
+
+from easygp import logger
 
 
 def optimize_01(f, bounds, num_restarts=10):
@@ -45,7 +48,8 @@ def optimize_01(f, bounds, num_restarts=10):
             min_f = res.fun
 
     if min_x is None:
-        raise ValueError("Optimization unsuccessful")
+        logger.critical("Optimization unsuccessful")
+        sys.exit(1)
 
     return min_x
 
@@ -54,19 +58,16 @@ class BasePolicy(ABC):
     """Base Policy. Initializes the target and ybest values to None by
     default. These must be manually set in later instances."""
 
-    @property
-    def target(self):
-        return self._target
-
-    @property
-    def ybest(self):
-        return self._ybest
+    def set_weight(self, x):
+        logger.debug(f"Set acquisition weight to {x}")
+        self._weight = x
 
     def __init__(self):
         """Initializes the target and ybest objects to None by default."""
 
         self._target = None
         self._ybest = None
+        self._weight = 1.0
 
     @abstractmethod
     def acquisition(self):
@@ -86,7 +87,7 @@ class BasePolicy(ABC):
 
         Returns
         -------
-        float
+        numpy.ndarray
             The suggested next x point.
         """
 
@@ -102,14 +103,14 @@ class BasePolicy(ABC):
 
         Parameters
         ----------
-        x : np.ndarray
+        x : numpy.ndarray
 
         Returns
         -------
-        np.ndarray
+        float
         """
 
-        return -((self.target - x) ** 2)
+        return -((self._target - x) ** 2)
 
 
 class MaxVariancePolicy(BasePolicy):
@@ -121,8 +122,10 @@ class MaxVariancePolicy(BasePolicy):
         raise NotImplementedError
 
     def acquisition(self, x, gp):
+        assert x.shape[0] == 1
         __, sd = gp.predict(x, return_std=True)
-        return sd**2
+        logger.debug(f"MaxVariancePolicy: sd={sd}")
+        return (sd**2 * self._weight).sum()
 
 
 class MaxVarianceTargetPolicy(BasePolicy):
@@ -130,36 +133,37 @@ class MaxVarianceTargetPolicy(BasePolicy):
     Requires the target to be defined."""
 
     def acquisition(self, x, gp):
+        assert x.shape[0] == 1
         r_samples = gp.sample_y(x)
         J_samples = self.objective(r_samples)
-        return np.var(J_samples)
+        return (np.var(J_samples) * self._weight).sum().item()
 
 
 class RequiresTarget:
     """Helper class which defines the explicit setter for the target."""
 
-    def set_target(self, target):
-        if not isinstance(target, (float, int)):
-            raise ValueError(f"Invalid target: {target}")
-        self._target = target
+    def set_target(self, x):
+        logger.debug(f"Set target to {x}")
+        self._target = x
 
 
 class RequiresYbest:
     """Helper class which defines the explicit setter for the best y value so
     far."""
 
-    def set_ybest(self, ybest):
-        if not isinstance(ybest, (float, int)):
-            raise ValueError(f"Invalid ybest: {ybest}")
-        self._ybest = ybest
+    def set_ybest(self, x):
+        logger.debug(f"Set ybest to {x}")
+        self._ybest = x
 
 
 class ExploitationTargetPolicy(BasePolicy, RequiresTarget):
     """Defines an acquisition function :math:`A(x) = J(E[r(x)])`."""
 
     def acquisition(self, x, gp):
+        assert x.shape[0] == 1
         mu, _ = gp.predict(x, return_std=True)
-        return self.objective(mu)
+        logger.debug(f"MaxVariancePolicy: mu={mu}")
+        return (self.objective(mu) * self._weight).sum().item()
 
 
 class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
@@ -171,10 +175,11 @@ class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
         self._n_samples = n_samples
 
     def acquisition(self, x, gp):
+        assert x.shape[0] == 1
         r_samples = gp.sample_y(x, n_samples=self._n_samples)
         J_samples = self.objective(r_samples) - self.ybest
         J_samples[J_samples < 0] = 0
-        return np.mean(J_samples)
+        return (np.mean(J_samples) * self._weight).sum().item()
 
 
 class TargetPerformance:
@@ -184,8 +189,12 @@ class TargetPerformance:
     def set_target(self, target):
         self._policy.set_target(target)
 
+    def set_weight(self, weight):
+        self._weight = weight
+
     def __init__(self):
         self._policy = ExploitationTargetPolicy()
+        self._weight = None
 
     def __call__(self, gp, truth, n_restarts=10):
         """Finds the target performance.
@@ -206,4 +215,4 @@ class TargetPerformance:
 
         estimated = self._policy.suggest(gp, n_restarts=n_restarts)
         gt = truth(estimated)
-        return -self._policy.objective(gt)
+        return (-self._policy.objective(gt) * self._weight).sum().item()
