@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import sys
 
 import numpy as np
 from scipy.optimize import minimize
@@ -49,7 +48,6 @@ def optimize_01(f, bounds, num_restarts=10):
 
     if min_x is None:
         logger.critical("Optimization unsuccessful")
-        sys.exit(1)
 
     return min_x
 

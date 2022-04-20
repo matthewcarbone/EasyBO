@@ -1,5 +1,6 @@
 """Basic logging module."""
 
+from contextlib import contextmanager
 import sys
 
 from loguru import logger
@@ -100,6 +101,17 @@ def DISABLE_DEBUG():
     """Quick helper to disable DEBUG mode."""
 
     configure_loggers(stdout_filter=["INFO", "SUCCESS"])
+
+
+@contextmanager
+def disable_logger():
+    """Context manager for disabling the logger."""
+
+    logger.disable("")
+    try:
+        yield None
+    finally:
+        logger.enable("")
 
 
 DISABLE_DEBUG()

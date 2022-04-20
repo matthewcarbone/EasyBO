@@ -1,5 +1,8 @@
 from contextlib import contextmanager
-from copy import deepcopy
+from copy import copy, deepcopy
+from joblib import Parallel, delayed
+from multiprocessing import cpu_count
+from os import getpid
 from tqdm import tqdm
 from time import time
 import warnings
@@ -10,7 +13,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor as sklearn_gp
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from easygp import logger, _DEBUG
+from easygp import logger, _DEBUG, disable_logger
 from easygp.policy import TargetPerformance, RequiresYbest
 
 
@@ -24,6 +27,12 @@ class AutoscalingGaussianProcessRegressor:
 
     @property
     def n_features(self):
+        """The number of features that the GP is constrained to train on.
+
+        Returns
+        -------
+        int
+        """
         return self._n_features
 
     @n_features.setter
@@ -33,6 +42,13 @@ class AutoscalingGaussianProcessRegressor:
 
     @property
     def n_targets(self):
+        """The number of targets that the GP is constrained to train on.
+
+        Returns
+        -------
+        int
+        """
+
         return self._n_targets
 
     @n_targets.setter
@@ -42,14 +58,42 @@ class AutoscalingGaussianProcessRegressor:
 
     @property
     def gps(self):
+        """A list of the
+        :class:`sklearn.gaussian_process.GaussianProcessRegressor` objects.
+
+        Returns
+        -------
+        list of sklearn.gaussian_process.GaussianProcessRegressor
+        """
+
         return self._gps
 
     @property
     def bounds(self):
+        """The boundaries of the input features. Bounds has the form::
+
+            [(d1_min, d1_max), (d2_min, d2_max), ...]
+
+        where each entry in the list is a tuple containing the minimum and
+        maximum allowed value for that dimension.
+
+        Returns
+        -------
+        list of tuple
+        """
+
         return self._bounds
 
     @property
     def kernels(self):
+        """A list of the Gaussian Process Regressor's string representations of
+        the kernels
+
+        Returns
+        -------
+        list of str
+        """
+
         return [xx.kernel_ for xx in self._gps]
 
     def __init__(
@@ -227,7 +271,8 @@ class AutoscalingGaussianProcessRegressor:
             Even for the same random state, different input grids (X) will
             produce different samples from the posterior if using the sklearn
             `sample_y` method. This is likely due to how the random sampling
-            works under the hood in sklearn.
+            works under the hood in sklearn. While it is not a bug, we need a
+            different way of doing the sampling for the campaigning.
 
         Here, we fix the issue by explicitly setting the random state to the
         same value every time a new point x is sampled. This is slightly less
@@ -348,6 +393,10 @@ class Campaign:
     def bounds(self):
         return self._bounds
 
+    @property
+    def randomstate(self):
+        return self._randomstate
+
     def __init__(
         self,
         X,
@@ -357,6 +406,9 @@ class Campaign:
         policy,
         randomstate=0,
         gp_kwargs={"kernel": RBF(length_scale=1.0), "n_restarts_optimizer": 10},
+        performance_func=TargetPerformance(),
+        iteration=-1,
+        truth=None,
     ):
         """Initializes the campaign.
 
@@ -385,24 +437,28 @@ class Campaign:
 
         # Set every input as a private attribute. Public attributes are handled
         # via properties
-        for key, value in locals().items():
-            if key != "self":
-                setattr(self, f"_{key}", value)
-
-        self._iteration = -1
-
+        self._X = X.copy()
+        self._y = y.copy()
+        self._alpha = alpha.copy()
+        self._bounds = copy(bounds)
+        self._policy = deepcopy(policy)
+        self._randomstate = randomstate
+        self._gp_kwargs = copy(gp_kwargs)
+        self._iteration = iteration
         self.fit()
-
-        self._performance_func = TargetPerformance()
+        self._performance_func = performance_func
         if self._policy._target is None:
-            logger.warning("Policy has no target: assuming target is 0")
+            logger.warning("Policy has no target: using arbitrary target: 0")
             self._performance_func.set_target(0.0)
         else:
             self._performance_func.set_target(self._policy._target)
         self._performance_func.set_weight(self._policy._weight)
 
         # Set the truth function based on the GP sampler
-        self._truth = GPSampler(deepcopy(self._gp), self._randomstate)
+        if truth is None:
+            self._truth = GPSampler(deepcopy(self._gp), self._randomstate)
+        else:
+            self._truth = truth
 
     def fit(self):
         """Fits the internal Gaussian Process using the current stored data.
@@ -428,7 +484,7 @@ class Campaign:
             if FIT_WARNING in str(warn.message):
                 msg = f"Model (bad fit) {self.gp.kernels} fit in {dt:.01} s"
                 return msg, True
-        return f"\tModel {self.gp.kernels} fit in {dt:.01} s", False
+        return f"Model {self.gp.kernels} fit in {dt:.01} s", False
 
     def _update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
@@ -446,7 +502,9 @@ class Campaign:
         self._y = np.concatenate([self._y, y], axis=0)
         self._alpha = np.concatenate([self._alpha, alpha], axis=0)
 
-    def run(self, n=10, n_restarts=10, ignore_criterion=1e-5):
+    def run(
+        self, n=10, n_restarts=10, ignore_criterion=1e-5, disable_tqdm=False
+    ):
         """Runs the campaign.
 
         Parameters
@@ -461,23 +519,27 @@ class Campaign:
             the mean absolute difference between any value currently in the
             campaign.X dataset, and the suggested value is less than this
             number, the suggested point will not be added to the campaign data.
+        disable_tqdm : bool, optional
+            If True, force-disables the progress bar regardless of the
+            debugging status.
 
         Returns
         -------
-        list of float
-            A list of the performance values acquired during the campaign.
+        dict
+            A dictionary with the results of the campaign.
         """
+
+        t0 = time()
 
         performance = []
         fit_info = []
         fit_warnings = []
+        points_too_close = []
 
         logger.info(f"Beginning campaign (n={n})")
         logger.info(f"Policy is {self._policy.__class__.__name__}")
 
-        points_too_close = 0
-
-        for counter in tqdm(range(n), disable=_DEBUG):
+        for counter in tqdm(range(n), disable=_DEBUG or disable_tqdm):
 
             logger.debug(f"Beginning iteration {counter:03}")
 
@@ -486,7 +548,7 @@ class Campaign:
                 to_max = self._policy.objective(self._y)
                 y_best = self._y[np.argmax(to_max, axis=0)].item()
                 self._policy.set_ybest(y_best)
-                logger.debug(f"\ty-best set to {y_best}")
+                logger.debug(f"y-best set to {y_best}")
 
             # Suggest a new point
             new_X = self._policy.suggest(self._gp, n_restarts)
@@ -495,10 +557,10 @@ class Campaign:
             diff = np.abs(self.X - new_X).sum(axis=1) < ignore_criterion
             if diff.sum() > 0:
                 logger.debug(
-                    f"\tProposed point {new_X} too close to existing data. "
+                    f"Proposed point {new_X} too close to existing data. "
                     "Ignoring."
                 )
-                points_too_close += 1
+                points_too_close.append(counter)
                 p = self._performance_func(self._gp, self._truth, n_restarts)
                 performance.append(p)
                 continue
@@ -509,25 +571,26 @@ class Campaign:
 
             # Get the new truth result for the suggested X value
             new_y = self._truth(new_X)
-            logger.debug(f"\ty-value of proposed points {new_y}")
+            logger.debug(f"y-value of proposed points {new_y}")
 
             # As for noise, use the average in the dataset plus/minus one
             # standard deviation
-            avg_noise = np.array([np.mean(self._alpha)]) + np.random.normal(
-                scale=self._alpha.std()
-            )
+            avg_noise = np.array(
+                [np.mean(self._alpha, axis=0)]
+            ) + np.random.normal(scale=self._alpha.std(axis=0))
 
             # Update the datasets stored in _X, _y, and _alpha
             self._update(new_X, new_y, avg_noise)
 
             # Refit on the new data
             msg, warning = self.fit()
+            msg = f"iter {counter:03}: {msg}"
             if warning:
                 fit_warnings.append(msg)
             else:
                 fit_info.append(msg)
 
-        if points_too_close > 0:
+        if len(points_too_close) > 0:
             logger.warning(
                 f"{points_too_close} too close to previous points in the "
                 "dataset - those points were ignored"
@@ -536,8 +599,61 @@ class Campaign:
         for msg in fit_warnings:
             logger.warning(msg)
 
+        dt = time() - t0
+
         return {
             "performance": performance,
             "info": fit_info,
             "warnings": fit_warnings,
+            "points_too_close": points_too_close,
+            "elapsed": dt,
+            "pid": getpid(),
         }
+
+
+class MultiCampaign:
+    def __init__(self, campaigns):
+        """Initializes the MultiCampaign.
+
+        Parameters
+        ----------
+        campaigns : list of Campaign
+            A list of the :class:`.Campaign` classes. Each of these classes
+            should have a different random state. If not, an error will be
+            logged.
+        """
+
+        self._campaigns = campaigns
+        randomstates = [cc.randomstate for cc in self._campaigns]
+        if len(np.unique(randomstates)) != len(randomstates):
+            logger.error("Campaigns do not contain all unique randomstates")
+
+    def run(
+        self, n, n_restarts=10, ignore_criterion=1e-5, n_jobs=cpu_count() // 2
+    ):
+        """Executes the campaigns.
+
+        Parameters
+        ----------
+        n_jobs : TYPE, optional
+            Description
+        """
+
+        def _run_wrapper(
+            xx, n=n, n_restarts=n_restarts, ignore_criterion=ignore_criterion
+        ):
+            with disable_logger():
+                res = xx.run(n, n_restarts, ignore_criterion, disable_tqdm=True)
+                return res, deepcopy(xx)
+
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_run_wrapper)(xx) for xx in self._campaigns
+        )
+
+        # The campaigns in the current class were not actually modified in
+        # memory. They need to be reset to the status of what was returned by
+        # joblib's Parallel + delayed
+        self._campaigns = [xx[1] for xx in results]
+
+        # The true results are in the first entry of the returned list:
+        return [xx[0] for xx in results]
