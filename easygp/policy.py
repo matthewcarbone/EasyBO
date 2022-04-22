@@ -120,6 +120,7 @@ class MaxVariancePolicy(BasePolicy):
         raise NotImplementedError
 
     def acquisition(self, x, gp):
+        print(x.shape)
         assert x.shape[0] == 1
         __, sd = gp.predict(x, return_std=True)
         logger.debug(f"MaxVariancePolicy: sd={sd}")
