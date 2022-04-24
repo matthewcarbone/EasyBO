@@ -88,7 +88,7 @@ def configure_loggers(
     # We always exit on critical
     logger.add(lambda _: sys.exit(1), level="CRITICAL")
 
-    logger.debug(f"Initializing GGCE v{__version__}")
+    logger.debug(f"Initializing easygp v{__version__}")
 
 
 def DEBUG():

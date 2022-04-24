@@ -33,12 +33,8 @@ class AutoscalingGaussianProcessRegressor:
         -------
         int
         """
-        return self._n_features
 
-    @n_features.setter
-    def n_features(self, x):
-        assert x > 0
-        self._n_features = x
+        return len(self._bounds)
 
     @property
     def n_targets(self):
@@ -50,11 +46,6 @@ class AutoscalingGaussianProcessRegressor:
         """
 
         return self._n_targets
-
-    @n_targets.setter
-    def n_targets(self, x):
-        assert x > 0
-        self._n_targets = x
 
     @property
     def gps(self):
@@ -101,27 +92,42 @@ class AutoscalingGaussianProcessRegressor:
         *,
         bounds,
         n_targets=1,
-        gp_kwargs={"kernel": RBF(length_scale=1.0), "n_restarts_optimizer": 10},
+        gp_kwargs={
+            "kernel": RBF(length_scale=1.0),
+            "n_restarts_optimizer": 10,
+        },
     ):
-        self._n_features = len(bounds)
-        self._n_targets = n_targets
         self._bounds = bounds
+        self._n_targets = n_targets
+        self._gp_kwargs = gp_kwargs
         self._Xscaler = MinMaxScaler(feature_range=(0.0, 1.0))
         self._yscaler = StandardScaler()
         self._gps = None
-        self._gp_kwargs = gp_kwargs
+
         self._scale_X = True
+        self._scale_y = True
 
     @contextmanager
-    def disable_scale_X(self):
-        """Context manager that disables the scaling of the input variable
-        X."""
+    def disable_scale_inputs(self):
+        """Context manager that disables the forward scaling of the input
+        variable X."""
 
         self._scale_X = False
         try:
             yield None
         finally:
             self._scale_X = True
+
+    @contextmanager
+    def disable_unscale_outputs(self):
+        """Context manager that disables the inverse scaling of the output
+        variable y as well as the noise term."""
+
+        self._scale_y = False
+        try:
+            yield None
+        finally:
+            self._scale_y = True
 
     def fit(self, X, y, alpha=1e-5):
         """Fits independent Gaussian Process(es). Will raise a warning if
@@ -142,20 +148,25 @@ class AutoscalingGaussianProcessRegressor:
             numerical instability during the GP fitting process).
         """
 
-        if y.shape[1] != self._n_targets:
+        if y.shape[1] != self.n_targets:
             logger.error(
                 f"Target array shape {y.shape} incompatible with provided "
-                f"number of targets: {self._n_targets}"
+                f"number of targets: {self.n_targets}"
             )
             return
 
         self._gps = []
 
-        X = X.reshape(-1, self._n_features)
+        X = X.reshape(-1, self.n_features)
         if self._scale_X:
             X = self._Xscaler.fit_transform(X)
-        y = self._yscaler.fit_transform(y.reshape(-1, self._n_targets))
-        alpha = alpha / self._yscaler.scale_
+        else:
+            logger.warning("Disabling Xscaler for fitting is not recommended")
+        if self._scale_y:
+            y = self._yscaler.fit_transform(y.reshape(-1, self.n_targets))
+            alpha = alpha / self._yscaler.scale_
+        else:
+            logger.warning("Disabling yscaler for fitting is not recommended")
 
         if y.shape[1] > 1:
             corr = pd.DataFrame(y).corr().to_numpy() ** 2 - np.eye(y.shape[1])
@@ -165,12 +176,12 @@ class AutoscalingGaussianProcessRegressor:
                     "targets is greater than 0.95."
                 )
 
-        for target_index in range(y.shape[1]):
+        for target_index in range(self.n_targets):
             _y = y[:, target_index].squeeze()
             if isinstance(alpha, (float, int)):
                 _alpha = alpha
             else:
-                _alpha = alpha.copy().reshape(-1, self._n_targets)
+                _alpha = alpha.copy().reshape(-1, self.n_targets)
                 _alpha = _alpha[:, target_index].squeeze()
             gp = sklearn_gp(alpha=_alpha**2, **self._gp_kwargs)
             gp.fit(X, _y)
@@ -196,7 +207,7 @@ class AutoscalingGaussianProcessRegressor:
             matrix.
         """
 
-        X = X.reshape(-1, self._n_features)
+        X = X.reshape(-1, self.n_features)
         if self._scale_X:
             X = self._Xscaler.transform(X)
 
@@ -212,16 +223,19 @@ class AutoscalingGaussianProcessRegressor:
 
         if return_std:
             std_or_cov = np.array(std_or_cov).T
-            std_or_cov = std_or_cov * self._yscaler.scale_
+
+            if self._scale_y:
+                std_or_cov = std_or_cov * self._yscaler.scale_
 
         # Return a list of covariance matrices in that case
-        else:
+        elif self._scale_y:
             std_or_cov = [
                 xx * self._yscaler.scale_[ii]
                 for ii, xx in enumerate(std_or_cov)
             ]
 
-        pred = self._yscaler.inverse_transform(pred)
+        if self._scale_y:
+            pred = self._yscaler.inverse_transform(pred)
 
         return pred, std_or_cov
 
@@ -405,7 +419,10 @@ class Campaign:
         bounds,
         policy,
         randomstate=0,
-        gp_kwargs={"kernel": RBF(length_scale=1.0), "n_restarts_optimizer": 10},
+        gp_kwargs={
+            "kernel": RBF(length_scale=1.0),
+            "n_restarts_optimizer": 10,
+        },
         performance_func=TargetPerformance(),
         iteration=-1,
         truth=None,
@@ -643,7 +660,9 @@ class MultiCampaign:
             xx, n=n, n_restarts=n_restarts, ignore_criterion=ignore_criterion
         ):
             with disable_logger():
-                res = xx.run(n, n_restarts, ignore_criterion, disable_tqdm=True)
+                res = xx.run(
+                    n, n_restarts, ignore_criterion, disable_tqdm=True
+                )
                 return res, deepcopy(xx)
 
         results = Parallel(n_jobs=n_jobs)(
