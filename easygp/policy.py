@@ -120,8 +120,6 @@ class MaxVariancePolicy(BasePolicy):
         raise NotImplementedError
 
     def acquisition(self, x, gp):
-        print(x.shape)
-        assert x.shape[0] == 1
         __, sd = gp.predict(x, return_std=True)
         logger.debug(f"MaxVariancePolicy: sd={sd}")
         return (sd**2 * self._weight).sum()
@@ -132,7 +130,6 @@ class MaxVarianceTargetPolicy(BasePolicy):
     Requires the target to be defined."""
 
     def acquisition(self, x, gp):
-        assert x.shape[0] == 1
         r_samples = gp.sample_y(x)
         J_samples = self.objective(r_samples)
         return (np.var(J_samples) * self._weight).sum().item()
@@ -159,7 +156,6 @@ class ExploitationTargetPolicy(BasePolicy, RequiresTarget):
     """Defines an acquisition function :math:`A(x) = J(E[r(x)])`."""
 
     def acquisition(self, x, gp):
-        assert x.shape[0] == 1
         mu, _ = gp.predict(x, return_std=True)
         logger.debug(f"MaxVariancePolicy: mu={mu}")
         return (self.objective(mu) * self._weight).sum().item()

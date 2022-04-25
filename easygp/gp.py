@@ -588,6 +588,7 @@ class Campaign:
 
             # Get the new truth result for the suggested X value
             new_y = self._truth(new_X)
+            new_y = new_y.reshape(-1, self._gp.n_targets)
             logger.debug(f"y-value of proposed points {new_y}")
 
             # As for noise, use the average in the dataset plus/minus one
@@ -597,6 +598,8 @@ class Campaign:
             ) + np.random.normal(scale=self._alpha.std(axis=0))
 
             # Update the datasets stored in _X, _y, and _alpha
+            # print(new_X.shape, new_y.shape, avg_noise.shape)
+            # print(self.X.shape, self.y.shape, self.alpha.shape)
             self._update(new_X, new_y, avg_noise)
 
             # Refit on the new data
