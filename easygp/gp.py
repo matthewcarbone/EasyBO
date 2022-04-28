@@ -8,12 +8,11 @@ from time import time
 import warnings
 
 import numpy as np
-import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor as sklearn_gp
 from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from easygp import logger, _DEBUG, disable_logger
+from easygp import logger, disable_logger
 from easygp.policy import TargetPerformance, RequiresYbest
 
 
@@ -37,17 +36,6 @@ class AutoscalingGaussianProcessRegressor:
         return len(self._bounds)
 
     @property
-    def n_targets(self):
-        """The number of targets that the GP is constrained to train on.
-
-        Returns
-        -------
-        int
-        """
-
-        return self._n_targets
-
-    @property
     def gps(self):
         """A list of the
         :class:`sklearn.gaussian_process.GaussianProcessRegressor` objects.
@@ -57,7 +45,7 @@ class AutoscalingGaussianProcessRegressor:
         list of sklearn.gaussian_process.GaussianProcessRegressor
         """
 
-        return self._gps
+        return self._gp
 
     @property
     def bounds(self):
@@ -76,7 +64,7 @@ class AutoscalingGaussianProcessRegressor:
         return self._bounds
 
     @property
-    def kernels(self):
+    def kernel(self):
         """A list of the Gaussian Process Regressor's string representations of
         the kernels
 
@@ -85,30 +73,28 @@ class AutoscalingGaussianProcessRegressor:
         list of str
         """
 
-        return [xx.kernel_ for xx in self._gps]
+        return self._gp.kernel_
 
     def __init__(
         self,
         *,
         bounds,
-        n_targets=1,
         gp_kwargs={
             "kernel": RBF(length_scale=1.0),
             "n_restarts_optimizer": 10,
         },
     ):
         self._bounds = bounds
-        self._n_targets = n_targets
         self._gp_kwargs = gp_kwargs
         self._Xscaler = MinMaxScaler(feature_range=(0.0, 1.0))
         self._yscaler = StandardScaler()
-        self._gps = None
+        self._gp = None
 
         self._scale_X = True
         self._scale_y = True
 
     @contextmanager
-    def disable_scale_inputs(self):
+    def disable_Xscaler(self):
         """Context manager that disables the forward scaling of the input
         variable X."""
 
@@ -119,7 +105,7 @@ class AutoscalingGaussianProcessRegressor:
             self._scale_X = True
 
     @contextmanager
-    def disable_unscale_outputs(self):
+    def disable_yscaler(self):
         """Context manager that disables the inverse scaling of the output
         variable y as well as the noise term."""
 
@@ -140,52 +126,32 @@ class AutoscalingGaussianProcessRegressor:
         X : np.ndarray
             Features to fit on. Of shape N x N_features.
         y : np.ndarray
-            Targets to fit multiple, independent GPs on. Of shape
-            N x N_targets.
+            Targets to fit multiple, independent GPs on. Of shape N x 1.
         alpha : float or np.ndarray, optional
-            Noise (standard deviation), of shape N x N_targets or is a float
+            Noise (standard deviation), of shape N x 1 or is a float
             (same noise for every target). Default is 1e-5 (to prevent
             numerical instability during the GP fitting process).
         """
 
-        if y.shape[1] != self.n_targets:
-            logger.error(
-                f"Target array shape {y.shape} incompatible with provided "
-                f"number of targets: {self.n_targets}"
-            )
-            return
-
-        self._gps = []
+        if len(y.shape) > 1:
+            assert y.shape[1] == 1
+        y = y.reshape(-1, 1)
 
         X = X.reshape(-1, self.n_features)
+
         if self._scale_X:
             X = self._Xscaler.fit_transform(X)
         else:
             logger.warning("Disabling Xscaler for fitting is not recommended")
+
         if self._scale_y:
-            y = self._yscaler.fit_transform(y.reshape(-1, self.n_targets))
+            y = self._yscaler.fit_transform(y.reshape(-1, 1))
             alpha = alpha / self._yscaler.scale_
         else:
             logger.warning("Disabling yscaler for fitting is not recommended")
 
-        if y.shape[1] > 1:
-            corr = pd.DataFrame(y).corr().to_numpy() ** 2 - np.eye(y.shape[1])
-            if np.any(corr > 0.95):
-                logger.warning(
-                    "Correlation coefficient between at least one pair of "
-                    "targets is greater than 0.95."
-                )
-
-        for target_index in range(self.n_targets):
-            _y = y[:, target_index].squeeze()
-            if isinstance(alpha, (float, int)):
-                _alpha = alpha
-            else:
-                _alpha = alpha.copy().reshape(-1, self.n_targets)
-                _alpha = _alpha[:, target_index].squeeze()
-            gp = sklearn_gp(alpha=_alpha**2, **self._gp_kwargs)
-            gp.fit(X, _y)
-            self._gps.append(gp)
+        self._gp = sklearn_gp(alpha=alpha.squeeze() ** 2, **self._gp_kwargs)
+        self._gp.fit(X, y)
 
     def predict(self, X, return_std=True):
         """Runs the predict operation on the Gaussian Processes. Two items are
@@ -208,38 +174,26 @@ class AutoscalingGaussianProcessRegressor:
         """
 
         X = X.reshape(-1, self.n_features)
+
         if self._scale_X:
             X = self._Xscaler.transform(X)
 
-        pred = []
-        std_or_cov = []
+        pred, std_or_cov = self._gp.predict(X, return_std, not return_std)
 
-        for gp in self._gps:
-            _pred, _std_or_cov = gp.predict(X, return_std, not return_std)
-            pred.append(_pred)
-            std_or_cov.append(_std_or_cov)
-
-        pred = np.array(pred).T
-
-        if return_std:
-            std_or_cov = np.array(std_or_cov).T
-
-            if self._scale_y:
-                std_or_cov = std_or_cov * self._yscaler.scale_
+        if return_std and self._scale_y:
+            std_or_cov *= self._yscaler.scale_
+            std_or_cov = std_or_cov.reshape(-1, 1)
 
         # Return a list of covariance matrices in that case
         elif self._scale_y:
-            std_or_cov = [
-                xx * self._yscaler.scale_[ii]
-                for ii, xx in enumerate(std_or_cov)
-            ]
+            std_or_cov *= self._yscaler.scale_**2
 
         if self._scale_y:
             pred = self._yscaler.inverse_transform(pred)
 
         return pred, std_or_cov
 
-    def sample_y(self, X, n_samples=1, randomstate=0):
+    def sample_y(self, X, n_samples=1, random_state=0):
         """Samples a single instance of the Gaussian Processes.
 
         Parameters
@@ -249,7 +203,7 @@ class AutoscalingGaussianProcessRegressor:
         n_samples : int, optional
             The number of random samples to take from the Gaussian Processes.
             Default is 1.
-        randomstate : int, optional
+        random_state : int, optional
             The random state which ensures reproducibility. Each unique number
             will produce a different samlple. Default is 0.
 
@@ -261,21 +215,18 @@ class AutoscalingGaussianProcessRegressor:
             just len(X) x num_targets.
         """
 
-        y_mean, y_cov = self.predict(X, return_std=False)
-        samples = []
-        for ii in range(len(self._gps)):
-            np.random.seed(randomstate)
-            samples.append(
-                np.random.multivariate_normal(
-                    y_mean[:, ii], y_cov[ii], n_samples
-                ).T.squeeze()
-            )
-        samples = np.array(samples)
-        if n_samples > 1:
-            return samples.swapaxes(0, 1)
-        return samples.T
+        X = X.reshape(-1, self.n_features)
 
-    def sample_y_reproducibly(self, X, n_samples=1, randomstate=0):
+        if self._scale_X:
+            X = self._Xscaler.transform(X)
+        y = self._gp.sample_y(
+            X, n_samples=n_samples, random_state=random_state
+        ).reshape(-1, 1)
+        if self._scale_y:
+            y = self._yscaler.inverse_transform(y)
+        return y
+
+    def sample_y_reproducibly(self, X, n_samples=1, random_state=0):
         """There is a subtlety when sampling from the Gaussian Process
         posterior that must be accounted for when using different sampling
         grids.
@@ -299,7 +250,7 @@ class AutoscalingGaussianProcessRegressor:
         n_samples : int, optional
             The number of random samples to take from the Gaussian Processes.
             Default is 1.
-        randomstate : int, optional
+        random_state : int, optional
             The random state which ensures reproducibility. Each unique number
             will produce a different samlple. Default is 0.
 
@@ -311,12 +262,16 @@ class AutoscalingGaussianProcessRegressor:
             just len(X) x num_targets.
         """
 
-        arr = np.array(
-            [self.sample_y(xx, n_samples, randomstate).squeeze() for xx in X]
+        X = X.reshape(-1, self.n_features)
+
+        return np.array(
+            [
+                self.sample_y(
+                    xx.reshape(1, -1), n_samples, random_state
+                ).squeeze()
+                for xx in X
+            ]
         )
-        if n_samples > 1:
-            return arr.swapaxes(1, 2)
-        return arr
 
 
 class GPSampler:
@@ -327,7 +282,7 @@ class GPSampler:
     def gp(self):
         return self._gp
 
-    def __init__(self, gp, randomstate=None):
+    def __init__(self, gp, random_state=None):
         """Initializes the class with a Gaussian Process and random state
         variable, which should be set to not None to ensure deterministic
         calculations.
@@ -336,16 +291,14 @@ class GPSampler:
         ----------
         gp : AutoscalingGaussianProcessRegressor
             The Gaussian Process regressor to use.
-        randomstate : int, optional
+        random_state : int, optional
             The random state used for seeding the numpy random number
             generator.
         """
 
         # Train nearest neighbor regressor on samples over dense grid
         self._gp = gp
-        self.n_features = gp.n_features
-        self.n_targets = gp.n_targets
-        self.randomstate = randomstate
+        self.random_state = random_state
 
     def __call__(self, x):
         """Samples the specific instance of the Gaussian Process.
@@ -362,9 +315,9 @@ class GPSampler:
         """
 
         return self._gp.sample_y_reproducibly(
-            x.reshape(-1, self.n_features),
+            x,
             n_samples=1,
-            randomstate=self.randomstate,
+            random_state=self.random_state,
         )
 
 
@@ -408,8 +361,8 @@ class Campaign:
         return self._bounds
 
     @property
-    def randomstate(self):
-        return self._randomstate
+    def random_state(self):
+        return self._random_state
 
     def __init__(
         self,
@@ -418,7 +371,7 @@ class Campaign:
         alpha,
         bounds,
         policy,
-        randomstate=0,
+        random_state=0,
         gp_kwargs={
             "kernel": RBF(length_scale=1.0),
             "n_restarts_optimizer": 10,
@@ -434,18 +387,18 @@ class Campaign:
         X : np.ndarray
             Initial feature data. Should be of shape (n x n_features).
         y : np.ndarray
-            Initial target data. Should be of shape (n x n_targets).
+            Initial target data. Should be of shape (n x 1).
         alpha : np.ndarray
             Initial target noise (standard deviation). Should be of shape
-            (n x n_targets), or a float.
+            (n x 1), (n,), or a float.
         bounds : list of tuple
             The lower and upper bounds for each dimension. Should be of length
             of the number of features in the input data.
         policy : easygp.policy.BasePolicy
             The policy for running the campaign. This defines the procedure by
             which new points are sampled.
-        randomstate : int, optional
-            The randomstate for the underlying Gaussian Process instance that
+        random_state : int, optional
+            The random_state for the underlying Gaussian Process instance that
             is treated as the ground truth.
         gp_kwargs : dict, optional
             Keyword arguments passed to the
@@ -459,21 +412,22 @@ class Campaign:
         self._alpha = alpha.copy()
         self._bounds = copy(bounds)
         self._policy = deepcopy(policy)
-        self._randomstate = randomstate
+        self._random_state = random_state
         self._gp_kwargs = copy(gp_kwargs)
         self._iteration = iteration
         self.fit()
         self._performance_func = performance_func
         if self._policy._target is None:
-            logger.warning("Policy has no target: using arbitrary target: 0")
+            logger.warning(
+                "Policy has no target- Saving performance function target to 0"
+            )
             self._performance_func.set_target(0.0)
         else:
             self._performance_func.set_target(self._policy._target)
-        self._performance_func.set_weight(self._policy._weight)
 
         # Set the truth function based on the GP sampler
         if truth is None:
-            self._truth = GPSampler(deepcopy(self._gp), self._randomstate)
+            self._truth = GPSampler(deepcopy(self._gp), self._random_state)
         else:
             self._truth = truth
 
@@ -489,9 +443,7 @@ class Campaign:
 
         t0 = time()
         self._gp = AutoscalingGaussianProcessRegressor(
-            bounds=self._bounds,
-            gp_kwargs=self._gp_kwargs,
-            n_targets=self._y.shape[1],
+            bounds=self._bounds, gp_kwargs=self._gp_kwargs
         )
         with warnings.catch_warnings(record=True) as caught_warnings:
             self._gp.fit(self._X, self._y, self._alpha)
@@ -499,9 +451,9 @@ class Campaign:
         dt = time() - t0
         for warn in caught_warnings:
             if FIT_WARNING in str(warn.message):
-                msg = f"Model (bad fit) {self.gp.kernels} fit in {dt:.01} s"
+                msg = f"Model (bad fit) {self.gp.kernel} fit in {dt:.01} s"
                 return msg, True
-        return f"Model {self.gp.kernels} fit in {dt:.01} s", False
+        return f"Model {self.gp.kernel} fit in {dt:.01} s", False
 
     def _update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
@@ -551,12 +503,14 @@ class Campaign:
         performance = []
         fit_info = []
         fit_warnings = []
+        fit_errors = []
         points_too_close = []
+        new_points = 0
 
         logger.info(f"Beginning campaign (n={n})")
         logger.info(f"Policy is {self._policy.__class__.__name__}")
 
-        for counter in tqdm(range(n), disable=_DEBUG or disable_tqdm):
+        for counter in tqdm(range(n), disable=disable_tqdm):
 
             logger.debug(f"Beginning iteration {counter:03}")
 
@@ -571,24 +525,12 @@ class Campaign:
             new_X = self._policy.suggest(self._gp, n_restarts)
             new_X = new_X.reshape(-1, self._gp.n_features)
 
-            diff = np.abs(self.X - new_X).sum(axis=1) < ignore_criterion
-            if diff.sum() > 0:
-                logger.debug(
-                    f"Proposed point {new_X} too close to existing data. "
-                    "Ignoring."
-                )
-                points_too_close.append(counter)
-                p = self._performance_func(self._gp, self._truth, n_restarts)
-                performance.append(p)
-                continue
-
             # Get the performance given this new point
             p = self._performance_func(self._gp, self._truth, n_restarts)
             performance.append(p)
 
             # Get the new truth result for the suggested X value
-            new_y = self._truth(new_X)
-            new_y = new_y.reshape(-1, self._gp.n_targets)
+            new_y = self._truth(new_X).reshape(-1, 1)
             logger.debug(f"y-value of proposed points {new_y}")
 
             # As for noise, use the average in the dataset plus/minus one
@@ -602,13 +544,18 @@ class Campaign:
             # print(self.X.shape, self.y.shape, self.alpha.shape)
             self._update(new_X, new_y, avg_noise)
 
-            # Refit on the new data
+            # Refit on the new data and keep track of any warnings
             msg, warning = self.fit()
             msg = f"iter {counter:03}: {msg}"
             if warning:
-                fit_warnings.append(msg)
+                if counter == n - 1:
+                    fit_errors.append(msg)
+                else:
+                    fit_warnings.append(msg)
             else:
                 fit_info.append(msg)
+
+            new_points += 1
 
         if len(points_too_close) > 0:
             logger.warning(
@@ -618,6 +565,8 @@ class Campaign:
 
         for msg in fit_warnings:
             logger.warning(msg)
+        for msg in fit_errors:
+            logger.error(msg)
 
         dt = time() - t0
 
@@ -625,9 +574,11 @@ class Campaign:
             "performance": performance,
             "info": fit_info,
             "warnings": fit_warnings,
+            "errors": fit_errors,
             "points_too_close": points_too_close,
             "elapsed": dt,
             "pid": getpid(),
+            "new_points": new_points,
         }
 
 
@@ -644,9 +595,9 @@ class MultiCampaign:
         """
 
         self._campaigns = campaigns
-        randomstates = [cc.randomstate for cc in self._campaigns]
-        if len(np.unique(randomstates)) != len(randomstates):
-            logger.error("Campaigns do not contain all unique randomstates")
+        random_states = [cc.random_state for cc in self._campaigns]
+        if len(np.unique(random_states)) != len(random_states):
+            logger.error("Campaigns do not contain all unique random_states")
 
     def run(
         self, n, n_restarts=10, ignore_criterion=1e-5, n_jobs=cpu_count() // 2
