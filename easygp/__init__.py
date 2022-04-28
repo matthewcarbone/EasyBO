@@ -57,8 +57,6 @@ def configure_loggers(
     """
 
     logger.remove(None)  # Remove ALL handlers
-    global _DEBUG
-    _DEBUG = False
 
     # # Use the MPI ranks if available
     if "DEBUG" in stdout_filter:
@@ -69,7 +67,6 @@ def configure_loggers(
             filter=generic_filter(["DEBUG"]),
             format=stdout_debug_fmt,
         )
-        _DEBUG = True
 
     logger.add(
         sys.stdout,
