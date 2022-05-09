@@ -13,7 +13,7 @@ from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from easygp import logger, disable_logger
-from easygp.policy import TargetPerformance, RequiresYbest
+from easygp.policy import TargetPerformance
 
 
 class AutoscalingGaussianProcessRegressor:
@@ -380,7 +380,9 @@ class Campaign:
         iteration=-1,
         truth=None,
     ):
-        """Initializes the campaign.
+        """Initializes the campaign. TODO: change this such that one can
+        provide multiple targets, but use a provided function of the outputs
+        of the GPs to optimize.
 
         Parameters
         ----------
@@ -471,9 +473,7 @@ class Campaign:
         self._y = np.concatenate([self._y, y], axis=0)
         self._alpha = np.concatenate([self._alpha, alpha], axis=0)
 
-    def run(
-        self, n=10, n_restarts=10, ignore_criterion=1e-5, disable_tqdm=False
-    ):
+    def run(self, n=10, n_restarts=10, disable_tqdm=False):
         """Runs the campaign.
 
         Parameters
@@ -483,11 +483,6 @@ class Campaign:
         n_restarts : int, optional
             The number of times the optimizer should be restarted in a new
             location while maximizing the acquisition function.
-        ignore_criterion : float, optional
-            This number determines when to ignore a suggested data point. If
-            the mean absolute difference between any value currently in the
-            campaign.X dataset, and the suggested value is less than this
-            number, the suggested point will not be added to the campaign data.
         disable_tqdm : bool, optional
             If True, force-disables the progress bar regardless of the
             debugging status.
@@ -504,7 +499,6 @@ class Campaign:
         fit_info = []
         fit_warnings = []
         fit_errors = []
-        points_too_close = []
         new_points = 0
 
         logger.info(f"Beginning campaign (n={n})")
@@ -515,7 +509,7 @@ class Campaign:
             logger.debug(f"Beginning iteration {counter:03}")
 
             # Start with setting ybest if needed
-            if isinstance(self._policy, RequiresYbest):
+            if hasattr(self._policy, "set_ybest"):
                 to_max = self._policy.objective(self._y)
                 y_best = self._y[np.argmax(to_max, axis=0)].item()
                 self._policy.set_ybest(y_best)
@@ -527,7 +521,7 @@ class Campaign:
 
             # Get the performance given this new point
             p = self._performance_func(self._gp, self._truth, n_restarts)
-            performance.append(p)
+            performance.append(p.item())
 
             # Get the new truth result for the suggested X value
             new_y = self._truth(new_X).reshape(-1, 1)
@@ -557,12 +551,6 @@ class Campaign:
 
             new_points += 1
 
-        if len(points_too_close) > 0:
-            logger.warning(
-                f"{points_too_close} too close to previous points in the "
-                "dataset - those points were ignored"
-            )
-
         for msg in fit_warnings:
             logger.warning(msg)
         for msg in fit_errors:
@@ -575,7 +563,6 @@ class Campaign:
             "info": fit_info,
             "warnings": fit_warnings,
             "errors": fit_errors,
-            "points_too_close": points_too_close,
             "elapsed": dt,
             "pid": getpid(),
             "new_points": new_points,
@@ -589,7 +576,7 @@ class MultiCampaign:
         Parameters
         ----------
         campaigns : list of Campaign
-            A list of the :class:`.Campaign` classes. Each of these classes
+            A list of the :class:`Campaign` classes. Each of these classes
             should have a different random state. If not, an error will be
             logged.
         """
@@ -599,9 +586,7 @@ class MultiCampaign:
         if len(np.unique(random_states)) != len(random_states):
             logger.error("Campaigns do not contain all unique random_states")
 
-    def run(
-        self, n, n_restarts=10, ignore_criterion=1e-5, n_jobs=cpu_count() // 2
-    ):
+    def run(self, n, n_restarts=10, n_jobs=cpu_count() // 2):
         """Executes the campaigns.
 
         Parameters
@@ -610,13 +595,9 @@ class MultiCampaign:
             Description
         """
 
-        def _run_wrapper(
-            xx, n=n, n_restarts=n_restarts, ignore_criterion=ignore_criterion
-        ):
+        def _run_wrapper(xx, n=n, n_restarts=n_restarts):
             with disable_logger():
-                res = xx.run(
-                    n, n_restarts, ignore_criterion, disable_tqdm=True
-                )
+                res = xx.run(n, n_restarts, disable_tqdm=True)
                 return res, deepcopy(xx)
 
         results = Parallel(n_jobs=n_jobs)(

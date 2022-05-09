@@ -6,7 +6,7 @@ from scipy.optimize import minimize
 from easygp import logger
 
 
-def optimize_01(f, bounds, num_restarts=10):
+def optimize(f, bounds, num_restarts=10):
     """Wrapper for the scipy.optimize.minimize class. This operates under the
     assumption that the input data is scaled to minimum 0 and maximum 1 at all
     times.
@@ -87,7 +87,7 @@ class BasePolicy(ABC):
         def aq(x):
             return -self.acquisition(x, gp)
 
-        return optimize_01(aq, gp.bounds, n_restarts)
+        return optimize(aq, gp.bounds, n_restarts)
 
     def objective(self, x):
         """Objective function to maximize. This is just the L2 norm by default,
@@ -174,7 +174,6 @@ class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
         self._n_samples = n_samples
 
     def acquisition(self, x, gp):
-        assert x.shape[0] == 1
         r_samples = gp.sample_y(x, n_samples=self._n_samples)
         J_samples = self.objective(r_samples) - self._ybest
         J_samples[J_samples < 0] = 0
