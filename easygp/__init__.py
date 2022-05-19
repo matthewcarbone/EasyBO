@@ -106,9 +106,20 @@ def disable_logger():
 
     logger.disable("")
     try:
-        yield None
+        yield
     finally:
         logger.enable("")
+
+
+@contextmanager
+def debug():
+    """Context manager for enabling debug mode on the fly."""
+
+    DEBUG()
+    try:
+        yield
+    finally:
+        DISABLE_DEBUG()
 
 
 DISABLE_DEBUG()
