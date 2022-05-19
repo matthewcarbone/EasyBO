@@ -36,7 +36,7 @@ class AutoscalingGaussianProcessRegressor:
         return len(self._bounds)
 
     @property
-    def gps(self):
+    def gp(self):
         """A list of the
         :class:`sklearn.gaussian_process.GaussianProcessRegressor` objects.
 
@@ -608,7 +608,11 @@ class Campaign:
 
             # Start with setting ybest if needed
             if hasattr(self._policy, "set_ybest"):
-                to_max = self._policy.objective(self._y)
+                if self._target_function is not None:
+                    y = self._target_function(self._y)
+                    to_max = self._policy.objective(y)
+                else:
+                    to_max = self._policy.objective(self._y)
                 y_best = self._y[np.argmax(to_max, axis=0)].item()
                 self._policy.set_ybest(y_best)
                 logger.debug(f"y-best set to {y_best}")

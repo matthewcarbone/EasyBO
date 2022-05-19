@@ -161,8 +161,14 @@ class UpperConfidenceBoundPolicy(BasePolicy, RequiresTarget):
         self._k = k
 
     def acquisition(self, x, gp):
+        # Trying to maximize the acquisition function
+        # Large objective is good - we want points close to that
+        # Large sd is good if we've already found close points
         mu, sd = gp.predict(x, return_std=True)
-        return (self.objective(mu).item() + self._k * sd).item()
+        mu_obj = self.objective(mu)
+        obj = (mu_obj + self._k * sd).item()
+        logger.debug(f"For x={x}, predicted mu_obj:sd={mu_obj}:{sd}")
+        return obj
 
 
 class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
