@@ -6,7 +6,7 @@ from scipy.optimize import minimize
 from easygp import logger
 
 
-def optimize(f, bounds, num_restarts=10):
+def optimize(f, bounds, n_restarts=10):
     """Wrapper for the scipy.optimize.minimize class. This operates under the
     assumption that the input data is scaled to minimum 0 and maximum 1 at all
     times.
@@ -20,7 +20,7 @@ def optimize(f, bounds, num_restarts=10):
         for those dimensions. The length of bounds should be equal to the
         number of input features of the function. E.g., for three features
         where each is between 0 and 1, bounds=[(0, 1), (0, 1), (0, 1)].
-    num_restarts : int, optional
+    n_restarts : int, optional
         The number of times to randomly try the fitting procedure.
 
     Returns
@@ -37,7 +37,7 @@ def optimize(f, bounds, num_restarts=10):
     min_f = np.inf
     min_x = None
 
-    for n in range(num_restarts):
+    for n in range(n_restarts):
         x_0 = np.random.uniform(
             low=[b[0] for b in bounds], high=[b[1] for b in bounds]
         )
@@ -66,7 +66,7 @@ class BasePolicy(ABC):
     def acquisition(self):
         pass
 
-    def suggest(self, gp, n_restarts=10):
+    def suggest(self, gp, bounds, n_restarts=10):
         """Suggests a new point based on maximizing the defined acquisition
         function. Assumes that the gaussian process acts on normalized x data,
         on the support 0 to 1 for each feature.
@@ -75,6 +75,9 @@ class BasePolicy(ABC):
         ----------
         gp : GaussianProcessRegressor
             The Gaussian Process object.
+        bounds : list
+            A list of tuple. The lower and upper bounds for each dimension.
+            Should be of length of the number of features in the input data.
         n_restarts : int, optional
             The number of times to restart the optimization procedure.
 
@@ -87,7 +90,7 @@ class BasePolicy(ABC):
         def aq(x):
             return -self.acquisition(x, gp)
 
-        return optimize(aq, gp.bounds, n_restarts)
+        return optimize(aq, bounds, n_restarts)
 
     def objective(self, x):
         """Objective function to maximize. This is just the L2 norm by default,
@@ -121,7 +124,7 @@ class MaxVariancePolicy(BasePolicy):
 
 
 class MaxVarianceTargetPolicy(BasePolicy):
-    """Defines an acquisition function :mat:`A(x) = \\mathrm{Var}[J(r(X))]`.
+    """Defines an acquisition function :math:`A(x) = \\mathrm{Var}[J(r(X))]`.
     Requires the target to be defined."""
 
     def acquisition(self, x, gp):
@@ -196,7 +199,7 @@ class TargetPerformance:
     def __init__(self):
         self._policy = ExploitationTargetPolicy()
 
-    def __call__(self, gp, truth, n_restarts=10):
+    def __call__(self, gp, truth, bounds, n_restarts=10):
         """Finds the target performance.
 
         Parameters
@@ -213,6 +216,6 @@ class TargetPerformance:
         float
         """
 
-        estimated = self._policy.suggest(gp, n_restarts=n_restarts)
+        estimated = self._policy.suggest(gp, bounds, n_restarts=n_restarts)
         gt = truth(estimated)
         return -self._policy.objective(gt)
