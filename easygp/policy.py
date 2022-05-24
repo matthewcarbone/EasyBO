@@ -1,3 +1,18 @@
+"""Policies, and their helper classes and functions, are defined here. All
+documentation follows the same conventions, namely:
+
+* The surrogate model (usually a Gaussian Process, specifically the
+  :class:`easygp.gp.EasyGP`) is always defined as :math:`f`. Note that the
+  surrogate should always provide an uncertainty estimate.
+* The objective function is (traditionally) denoted as :math:`J`.
+* The acquisition function is given by :math:`A`.
+* The expectation symbol is :math:`\\mathop{\\mathbb{E}}[\\cdot]`, and
+  indicates an average over the estimators. In the case of a Gaussian Process,
+  this is simply the predicted mean.
+* The variance symbol is :math:`\\mathrm{Var}[\\cdot]` and indicates the
+  variance over the estimators.
+"""
+
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -6,6 +21,8 @@ from scipy.optimize import minimize
 from easygp import logger
 
 
+# TODO: consider making this such that the optimization only acts between
+# 0 and 1.
 def optimize(f, bounds, n_restarts=10):
     """Wrapper for the scipy.optimize.minimize class. This operates under the
     assumption that the input data is scaled to minimum 0 and maximum 1 at all
@@ -30,8 +47,8 @@ def optimize(f, bounds, n_restarts=10):
 
     Raises
     ------
-    ValueError
-        If the optimization was not successful.
+    RuntimeError
+        If the optimization was unsuccessful.
     """
 
     min_f = np.inf
@@ -48,6 +65,7 @@ def optimize(f, bounds, n_restarts=10):
 
     if min_x is None:
         logger.critical("Optimization unsuccessful")
+        raise RuntimeError
 
     return min_x
 
@@ -68,23 +86,23 @@ class BasePolicy(ABC):
 
     def suggest(self, gp, bounds, n_restarts=10):
         """Suggests a new point based on maximizing the defined acquisition
-        function. Assumes that the gaussian process acts on normalized x data,
-        on the support 0 to 1 for each feature.
+        function.
 
         Parameters
         ----------
-        gp : GaussianProcessRegressor
+        gp : easygp.gp.EasyGP
             The Gaussian Process object.
         bounds : list
             A list of tuple. The lower and upper bounds for each dimension.
             Should be of length of the number of features in the input data.
         n_restarts : int, optional
-            The number of times to restart the optimization procedure.
+            The number of times to restart (re-attempt) the optimization
+            procedure.
 
         Returns
         -------
         numpy.ndarray
-            The suggested next x point.
+            The suggested next input point.
         """
 
         def aq(x):
@@ -93,9 +111,9 @@ class BasePolicy(ABC):
         return optimize(aq, bounds, n_restarts)
 
     def objective(self, x):
-        """Objective function to maximize. This is just the L2 norm by default,
-        but could in principle be overridden by other objective functions in
-        derived classes.
+        """Objective function to maximize. This is just the :math:`L_2` norm by
+        default, but could in principle be overridden by other objective
+        functions in derived classes.
 
         Parameters
         ----------
@@ -110,22 +128,39 @@ class BasePolicy(ABC):
 
 
 class MaxVariancePolicy(BasePolicy):
-    """Defines an acquisition function :math:`A(x) = \\mathrm{Var}[r(x)]`. Used
-    essentially for active learning, by sampling areas where the variance is
-    highest."""
+    """Utilizes the acquisition function
+
+    .. math::
+
+        A(x) = \\mathrm{Var}[f(x)]
+
+    Used for active learning, by sampling areas where the variance is highest.
+    """
 
     def objective(self):
         raise NotImplementedError
 
     def acquisition(self, x, gp):
         __, sd = gp.predict(x, return_std=True)
-        logger.debug(f"MaxVariancePolicy: sd={sd}")
         return (sd**2).sum().item()
 
 
 class MaxVarianceTargetPolicy(BasePolicy):
-    """Defines an acquisition function :math:`A(x) = \\mathrm{Var}[J(r(X))]`.
-    Requires the target to be defined."""
+    """Utilizes the acquisition function
+
+    .. math::
+
+        A(x) = \\mathrm{Var}[J(f(x))]
+
+    Instead of sampling areas where the variance is highest, this method
+    samples areas where the variance in the acquisition function, :math:`J`,
+    is highest. Note that this requires the ``target`` to be defined.
+
+    Parameters
+    ----------
+    n_samples : int
+        The number of samples to take when calculating the expectations.
+    """
 
     def acquisition(self, x, gp):
         r_samples = gp.sample_y(x)
@@ -133,7 +168,7 @@ class MaxVarianceTargetPolicy(BasePolicy):
         return np.var(J_samples).item()
 
 
-class RequiresTarget:
+class _RequiresTarget:
     """Helper class which defines the explicit setter for the target."""
 
     def set_target(self, x):
@@ -141,7 +176,7 @@ class RequiresTarget:
         self._target = x
 
 
-class RequiresYbest:
+class _RequiresYbest:
     """Helper class which defines the explicit setter for the best y value so
     far."""
 
@@ -150,16 +185,43 @@ class RequiresYbest:
         self._ybest = x
 
 
-class ExploitationTargetPolicy(BasePolicy, RequiresTarget):
-    """Defines an acquisition function :math:`A(x) = J(E[r(x)])`."""
+class ExploitationTargetPolicy(BasePolicy, _RequiresTarget):
+    """Utilizes the acquisition function
+
+    .. math::
+
+        A(x) = J(\\mathop{\\mathbb{E}}[f(x)])
+
+    This is a pure exploitation policy. It is extremely dependent on the data
+    used during the initial fitting, since there is no exploratory part of
+    this policy.
+    """
 
     def acquisition(self, x, gp):
         mu, _ = gp.predict(x, return_std=True)
         return self.objective(mu).item()
 
 
-class UpperConfidenceBoundPolicy(BasePolicy, RequiresTarget):
-    def __init__(self, *args, k=2.0 / np.sqrt(2.0), **kwargs):
+class UpperConfidenceBoundPolicy(BasePolicy, _RequiresTarget):
+    """Utilizes the acquisition function
+
+    .. math::
+
+        A(x) = J(\\mathop{\\mathbb{E}}[f(x)]) + k \\sqrt{\\mathrm{Var}[f(x)]}
+
+    This method explicitly balances the purely exploitative policy
+    (:class:`.ExploitationTargetPolicy`) and the purely exploratory policy
+    (:class:`.MaxVariancePolicy`) with a weight factor given by
+    :math:`k=\\sqrt{2}` by default.
+
+    Parameters
+    ----------
+    k : float
+        The weighting term given to the standard deviation component of the
+        acquisition function.
+    """
+
+    def __init__(self, *args, k=np.sqrt(2.0), **kwargs):
         super().__init__(*args, **kwargs)
         self._k = k
 
@@ -169,14 +231,25 @@ class UpperConfidenceBoundPolicy(BasePolicy, RequiresTarget):
         # Large sd is good if we've already found close points
         mu, sd = gp.predict(x, return_std=True)
         mu_obj = self.objective(mu)
-        obj = (mu_obj + self._k * sd).item()
-        logger.debug(f"For x={x}, predicted mu_obj:sd={mu_obj}:{sd}")
-        return obj
+        return (mu_obj + self._k * sd).item()
 
 
-class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
+class ExpectedImprovementPolicy(BasePolicy, _RequiresTarget, _RequiresYbest):
     """Defines an acquisition function
-    :math:`A(x) = E[J(r(x)) - y_\\mathrm{best}]^+`."""
+
+    .. math::
+
+        A(x) = \\mathop{\\mathbb{E}}[J(f(x)) - y_\\mathrm{best}]^+
+
+    The expected improvement policy accounts for the magnitude of the
+    improvement a newly sampled point will provide, and chooses the point that
+    is thought to maximize that improvement.
+
+    Parameters
+    ----------
+    n_samples : int
+        The number of samples to take when calculating the expectations.
+    """
 
     def __init__(self, *args, n_samples=100, **kwargs):
         super().__init__(*args, **kwargs)
@@ -189,7 +262,7 @@ class ExpectedImprovementPolicy(BasePolicy, RequiresTarget, RequiresYbest):
         return np.mean(J_samples).item()
 
 
-class TargetPerformance:
+class _TargetPerformance:
     """A special helper standalone class for measuring the target
     performance."""
 
@@ -204,8 +277,8 @@ class TargetPerformance:
 
         Parameters
         ----------
-        gp : GaussianProcessRegressor
-        truth : GPSampler
+        gp : easygp.gp.EasyGP
+        truth : easygp.campaign.GPSampler
             The ground truth function. A single instance of a Gaussian Process,
             used for the campaigning.
         n_features : int

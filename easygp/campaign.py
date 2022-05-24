@@ -6,12 +6,11 @@ from time import time
 import warnings
 
 import numpy as np
-from sklearn.gaussian_process.kernels import RBF
 from tqdm import tqdm
 
 from easygp import logger, disable_logger
 from easygp.gp import EasyGP
-from easygp.policy import TargetPerformance
+from easygp.policy import _TargetPerformance
 
 
 class GPSampler:
@@ -59,54 +58,45 @@ class GPSampler:
         )
 
 
-FIT_WARNING = "Decreasing the bound and calling fit again may find a better"
-
-
-class _TargetMethod:
-    def __init__(self, gps, target_function, target_function_uncertainty):
-        self._gps = gps
-        self._target_function = target_function
-        self._target_function_uncertainty = target_function_uncertainty
-
-    def predict(self, X):
-        preds = []
-        errors = []
-        for gp in self._gps:
-            mu, std = gp.predict(X)
-            preds.append(mu)
-            errors.append(std)
-        preds = np.array(preds).reshape(-1, self._n_targets)
-        errors = np.array(errors).reshape(-1, self._n_targets)
-        mu = self._target_function(preds)
-        sd = self._target_function_uncertainty(preds, errors)
-        return mu, sd
-
-    def __call__(self, X):
-        preds = []
-        for gp in self._gps:
-            mu, std = gp.sample_y_reproducibly(
-                X, n_samples=1, random_state=self.random_state
-            )
-            preds.append(mu)
-        preds = np.array(preds).reshape(-1, self._n_targets)
-        return self._target_function(preds)
-
-
 class Campaign:
     """Used for running optimization campaigns given some data. While choosing
     a policy is ultimately up to the user, it has been shown that running
     campaigns on minimal data can be useful in helping to choose an optimal
     policy given some objective. This class allows the user to rapidly test
-    different policies (from easygp.policy) and evaluate their effectiveness
-    given some initial dataset."""
+    different policies (from :class:`easygp.policy`) and evaluate their
+    effectiveness given some initial dataset.
+
+    .. note::
+
+        This campaign only allows for a single scalar target.
+
+    Parameters
+    ----------
+    initial_X : numpy.ndarray
+        Initial feature data. Should be of shape ``n`` x ``n_features``.
+    initial_y : numpy.ndarray
+        Initial target data. Should be of shape ``n`` x ``n_targets``.
+    initial_alpha : numpy.ndarray
+        Initial target noise (standard deviation). Should be of shape
+        ``n`` x ``n_targets``, or a float.
+    policy : easygp.policy.BasePolicy
+        The policy for running the campaign. This defines the procedure by
+        which new points are sampled.
+    bounds : list of tuple
+        The lower and upper bounds for each dimension. Should be of length
+        of the number of features in the input data.
+    random_state : int, optional
+        The random_state for the underlying Gaussian Process instance that
+        is treated as the ground truth.
+    gp : easygp.gp.EasyGP, optional
+        The EasyGP Gaussian Process object used for fitting the data.
+    iteration : int, optional
+        The current iteration of the campaign.
+    """
 
     @property
-    def gps(self):
-        return self._gps
-
-    @gps.setter
-    def gps(self, x):
-        raise RuntimeError("Do not try and set the GP yourself!")
+    def gp(self):
+        return self._gp
 
     @property
     def truth(self):
@@ -137,70 +127,28 @@ class Campaign:
         initial_X,
         initial_y,
         initial_alpha,
-        bounds,
         policy,
+        bounds=None,
         random_state=0,
-        gp_kwargs={
-            "kernel": RBF(length_scale=1.0),
-            "n_restarts_optimizer": 10,
-        },
+        gp=EasyGP(n_restarts_optimizer=10),
         iteration=-1,
-        target_function=None,
-        target_function_uncertainty=None,
     ):
-        """Initializes the campaign.
-
-        Parameters
-        ----------
-        initial_X : numpy.ndarray
-            Initial feature data. Should be of shape ``n`` x ``n_features``.
-        initial_y : numpy.ndarray
-            Initial target data. Should be of shape ``n`` x ``n_targets``.
-        initial_alpha : numpy.ndarray
-            Initial target noise (standard deviation). Should be of shape
-            ``n`` x ``n_targets``, or a float.
-        bounds : list of tuple
-            The lower and upper bounds for each dimension. Should be of length
-            of the number of features in the input data.
-        policy : easygp.policy.BasePolicy
-            The policy for running the campaign. This defines the procedure by
-            which new points are sampled.
-        random_state : int, optional
-            The random_state for the underlying Gaussian Process instance that
-            is treated as the ground truth.
-        gp_kwargs : dict, optional
-            Keyword arguments passed to the
-            EasyGP.
-        iteration : int, optional
-            The number of times that ``fit`` has been called.
-        target_function : callable, optional
-            If the number of targets is more than one, this is required. The
-            ``target_function`` should take a single array as input, of shape
-            ``N`` x ``n_features``. It is used as the overall output of the
-            models for campaigning. If None, and the number of targets is 1,
-            then the outputs of the GP will be used.
-        target_function_uncertainty : callable, optional
-            Similar to ``target_function``, but for the uncertainties. This
-            should be calculated using standard propagation of errors on the
-            ``target_function``. This function takes two inputs: one for the
-            values, one for the errors.
-        """
-
-        # Set every input as a private attribute. Public attributes are handled
-        # via properties
         self._X = initial_X.copy()
         self._y = initial_y.copy()
-        self._n_targets = self._y.shape[1]
         self._n_features = self._X.shape[1]
         self._alpha = initial_alpha.copy()
+        if bounds is None:
+            mins = initial_X.min(axis=0)
+            maxs = initial_X.max(axis=0)
+            bounds = [(m0, mf) for m0, mf in zip(mins, maxs)]
         self._bounds = copy(bounds)
         self._policy = deepcopy(policy)
         self._random_state = random_state
-        self._gp_kwargs = copy(gp_kwargs)
+        self._gp = deepcopy(gp)
+        self._original_gp = deepcopy(gp)
         self._iteration = iteration
-        self._gps = None
-        self.fit()
-        self._performance_func = TargetPerformance()
+        self._fit()
+        self._performance_func = _TargetPerformance()
         if self._policy._target is None:
             logger.warning(
                 "Policy has no target- Saving performance function target to 0"
@@ -209,85 +157,43 @@ class Campaign:
         else:
             self._performance_func.set_target(self._policy._target)
 
-        # Set the target functions and their uncertainties
-        self._target_function = target_function
-        self._target_function_uncertainty = target_function_uncertainty
-
-        if self._target_function is None:
-            if self._n_targets == 1:
-                klass = self._gps[0]
-            else:
-                logger.critical("Invalid option for target_function")
-        else:
-            klass = _TargetMethod(
-                self._gps,
-                self._target_function,
-                self._target_function_uncertainty,
-            )
-
         # Set the truth function based on the GP sampler
-        self._truth = GPSampler(deepcopy(klass), self._random_state)
+        self._truth = GPSampler(deepcopy(self._gp), self._random_state)
 
-    def fit(self):
+    def _fit(self):
         """Fits the internal Gaussian Process using the current stored data.
 
         Returns
         -------
-        tuple
-            Returns two lists, one for the standard messages and one for
+        dict
+            A dict with two keys, one for the standard messages and one for
             warning messages, as output during the fitting processes.
         """
 
-        self._gps = []
+        self._gp = deepcopy(self._original_gp)
         warning_messages = []
         messages = []
 
-        for ii in range(self._n_targets):
+        t0 = time()
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            self._gp.fit(self._X, self._y, self._alpha)
+        dt = time() - t0
 
-            t0 = time()
-            _gp = EasyGP(**self._gp_kwargs)
-            with warnings.catch_warnings(record=True) as caught_warnings:
-                _gp.fit(
-                    self._X,
-                    self._y[:, ii].reshape(-1, 1),
-                    self._alpha[:, ii].squeeze(),
-                )
-                self._gps.append(_gp)
-            dt = time() - t0
-
-            bad_fit = False
-            for warn in caught_warnings:
-                if FIT_WARNING in str(warn.message):
-                    msg = f"{ii} (bad fit) {_gp.kernel_} fit in {dt:.01} s"
-                    warning_messages.append(msg)
-                    bad_fit = True
-            if not bad_fit:
-                messages.append(f"{ii} {_gp.kernel_} fit in {dt:.01} s")
+        bad_fit = False
+        FIT_WARNING = (
+            "Decreasing the bound and calling fit again may find a better"
+        )
+        for warn in caught_warnings:
+            if FIT_WARNING in str(warn.message):
+                msg = f"(bad fit) {self._gp.kernel_} fit in {dt:.01} s"
+                warning_messages.append(msg)
+                bad_fit = True
+        if not bad_fit:
+            messages.append(f"{self._gp.kernel_} fit in {dt:.01} s")
 
         self._iteration += 1
 
-        return messages, warning_messages
-
-    def predict(self, X):
-        """Runs a prediction using the most up-to-date version of the
-        Gaussian Processes contained in the campaign.
-
-        Parameters
-        ----------
-        X : numpy.array
-        """
-
-        N = X.shape[0]
-        preds = []
-        errors = []
-        for ii in range(self._n_targets):
-            gp = self._gps[ii]
-            mu, sd = gp.predict(X, return_std=True)
-            preds.append(mu)
-            errors.append(sd)
-        preds = np.array(preds).reshape(N, self._n_targets)
-        errors = np.array(errors).reshape(N, self._n_targets)
-        return preds, errors
+        return {"messages": messages, "warnings": warning_messages}
 
     def _update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
@@ -301,8 +207,8 @@ class Campaign:
         """
 
         X = X.reshape(-1, self._n_features)
-        y = y.reshape(-1, self._n_targets)
-        alpha = alpha.reshape(-1, self._n_targets)
+        y = y.reshape(-1, 1)
+        alpha = alpha.reshape(-1, 1)
         self._X = np.concatenate([self._X, X], axis=0)
         self._y = np.concatenate([self._y, y], axis=0)
         self._alpha = np.concatenate([self._alpha, alpha], axis=0)
@@ -343,41 +249,23 @@ class Campaign:
 
             # Start with setting ybest if needed
             if hasattr(self._policy, "set_ybest"):
-                if self._target_function is not None:
-                    y = self._target_function(self._y)
-                    to_max = self._policy.objective(y)
-                else:
-                    to_max = self._policy.objective(self._y)
-                y_best = self._y[np.argmax(to_max, axis=0)].item()
+                distance = self._policy.objective(self._y)
+                y_best = self._y[np.argmax(distance, axis=0)].item()
                 self._policy.set_ybest(y_best)
                 logger.debug(f"y-best set to {y_best}")
 
-            # No matter what, klass below will have a predict() method that
-            # returns a prediction for mu and sd
-            if self._target_function is None:
-                if self._n_targets == 1:
-                    klass = self._gps[0]
-                else:
-                    logger.critical("Invalid option for target_function")
-            else:
-                klass = _TargetMethod(
-                    self._gps,
-                    self._target_function,
-                    self._target_function_uncertainty,
-                )
-
             # Suggest a new point
-            new_X = self._policy.suggest(klass, self.bounds, n_restarts)
-            new_X = new_X.reshape(-1, self._n_features)
+            new_X = self._gp.suggest(self._policy, self._bounds, n_restarts)
 
             # Get the performance given this new point
-            p = self._performance_func(
-                klass, self._truth, self.bounds, n_restarts
+            performance.append(
+                self._performance_func(
+                    self._gp, self._truth, self._bounds, n_restarts
+                ).item()
             )
-            performance.append(p.item())
 
             # Get the new truth result for the suggested X value
-            new_y = self._truth(new_X).reshape(-1, 1)
+            new_y = self._truth(new_X)
             logger.debug(f"y-value of proposed points {new_y}")
 
             # As for noise, use the average in the dataset plus/minus one
@@ -392,13 +280,13 @@ class Campaign:
             self._update(new_X, new_y, avg_noise)
 
             # Refit on the new data and keep track of any warnings
-            messages, warning_messages = self.fit()
-            fit_info.extend(messages)
+            fit_res = self._fit()
+            fit_info.extend(fit_res["messages"])
 
             if counter == n - 1:
-                fit_errors.extend(warning_messages)
+                fit_errors.extend(fit_res["warning_messages"])
             else:
-                fit_warnings.extend(warning_messages)
+                fit_warnings.extend(fit_res["warning_messages"])
 
         for msg in fit_warnings:
             logger.warning(msg)

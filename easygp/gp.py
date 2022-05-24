@@ -21,7 +21,8 @@ class EasyGP(GaussianProcessRegressor):
     default. Specifically, the `default` assumptions of this class are:
 
     * Input features can be safely scaled to range :math:`[0, 1]` using
-      :class:`sklearn.preprocessing.MinMaxScaler`.
+      :class:`sklearn.preprocessing.MinMaxScaler`. This allows for a consistent
+      length scale between all features.
 
     * Output targets can be safely scaled to a standard normal distribution
       using :class:`sklearn.preprocessing.StandardScaler`.
@@ -32,13 +33,33 @@ class EasyGP(GaussianProcessRegressor):
 
     We note however that any of these defaults can be overridden (though in
     that case it might make more sense to just use the standard
-    ``sci-kit learn`` implementation).
+    ``scikit-learn`` implementation).
+
+    .. note::
+
+        The :class:`.EasyGP` object only handles single-target objectives.
+        This is because the ``scikit-learn`` implementation of the Gaussian
+        Process Regressor does not handle correlated targets. In general,
+        it is important to check that targets are uncorrelated when using this
+        method, but in the case of :class:`.EasyGP`, it is simply prevented
+        outright. Multi-target optimizations are highly nontrivial, though to
+        predict multiple targets, one should simply train multiple
+        :class:`.EasyGP` objects, one for each target, though correlation
+        information between targets will not be utilized.
     """
 
     @contextmanager
     def disable_scalers(self, *, disable_X, disable_y):
         """Context manager that disables the forward scaling of the input
-        variable X."""
+        variable ``X`` and the output variable ``y``.
+
+        Parameters
+        ----------
+        disable_X : bool
+            If ``True``, disables the forward scaling of ``X``.
+        disable_y : bool
+            If ``True``, disables the inverse scaling of ``y``.
+        """
 
         self._scale_X = False if disable_X else True
         self._scale_y = False if disable_y else True
@@ -61,7 +82,6 @@ class EasyGP(GaussianProcessRegressor):
         self._scale_X = True
         self._scale_y = True
         self._n_features = None
-        self._n_targets = None
 
     def fit(self, X, y, alpha=1e-10):
         """A lightweight wrapper for `scikit-learn's Gaussian Process Regressor
@@ -79,33 +99,38 @@ class EasyGP(GaussianProcessRegressor):
             Targets to fit on.
         alpha : float or numpy.ndarray, optional
             Noise (variance), of the same shape as ``y``, or is a
-            float (same noise for every target). Default is 1e-5 (to prevent
+            float (same noise for every target). Default is 1e-10 (to prevent
             numerical instability during the GP fitting process).
         """
 
         if len(X.shape) < 2:
-            logger.error("X input shape should be 2d (samples x features)")
+            logger.error("X input shape should be 2d (samples, features)")
             return
-        if len(y.shape) < 2:
-            logger.error("y input shape should be 2d (samples x targets)")
-            return
-        if isinstance(alpha, np.ndarray):
-            if y.shape[1] == 1 and len(alpha.shape) == 1:
-                pass
-            elif y.shape[1] == 1 and len(alpha.shape) == 2:
-                alpha = alpha.squeeze()
-            elif alpha.shape != y.shape:
-                logger.error("alpha shape must be equal to y shape")
-        if y.shape[1] > 1:
-            logger.warning(
-                "The sci-kit learn Gaussian Process (and EasyGP) does not "
+
+        if len(y.shape) == 1:
+            pass
+        elif len(y.shape > 1) and y.shape[1] > 1:
+            logger.error(
+                "y input shape should be of either (samples, ) or (samples, 1)"
+            )
+            logger.error(
+                "The scikit-learn Gaussian Process (and EasyGP) does not "
                 "truly handle multi-target objectives. Each target is treated "
                 "as statistically independent from each other. This should be "
                 "checked before fitting EasyGP on a multi-target y object."
             )
+            return
+
+        if isinstance(alpha, np.ndarray):
+            if len(alpha.shape) == 1:
+                pass
+            elif len(alpha.shape) == 2:
+                alpha = alpha.squeeze()
+            elif alpha.shape != y.shape:
+                logger.error("alpha shape must be equal to y shape")
+                return
 
         self._n_features = X.shape[1]
-        self._n_targets = y.shape[1]
 
         if self._scale_X:
             X = self._Xscaler.fit_transform(X)
@@ -113,7 +138,7 @@ class EasyGP(GaussianProcessRegressor):
             logger.warning("Disabling Xscaler for fitting is not recommended")
 
         if self._scale_y:
-            y = self._yscaler.fit_transform(y)
+            y = self._yscaler.fit_transform(y.reshape(-1, 1)).squeeze()
             alpha = alpha / self._yscaler.scale_**2
         else:
             logger.warning("Disabling yscaler for fitting is not recommended")
@@ -121,6 +146,7 @@ class EasyGP(GaussianProcessRegressor):
         # self.alpha = (sd**2).squeeze()  # Override alpha
         self.alpha = alpha
 
+        logger.debug(f"Fitting on shapes X ({X.shape}) -> y ({y.shape})")
         super().fit(X, y)
 
         if isinstance(self.kernel_, RBF):
@@ -142,7 +168,7 @@ class EasyGP(GaussianProcessRegressor):
 
         .. note::
 
-            As per the scikit-learn API, ``return_std`` and ``return_cov``
+            As per the ``scikit-learn`` API, ``return_std`` and ``return_cov``
             cannot both be specified simultaneously.
 
         Parameters
@@ -163,9 +189,10 @@ class EasyGP(GaussianProcessRegressor):
 
         # Preempt the error that will be thrown by sklearn
         if return_std and return_cov:
-            logger.critical(
+            logger.error(
                 "Both return_std and return_cov cannot be specified together"
             )
+            return
 
         X = X.reshape(-1, self._n_features)
 
@@ -174,31 +201,26 @@ class EasyGP(GaussianProcessRegressor):
 
         if not return_std and not return_cov:
             pred = super().predict(X, return_std=False, return_cov=False)
-            pred = pred.reshape(-1, self._n_targets)
             if self._scale_y:
-                pred = self._yscaler.inverse_transform(pred)
-            return pred.reshape(-1, self._n_targets)
+                pred = self._yscaler.inverse_transform(pred.reshape(-1, 1))
+            return pred
 
         elif return_std:
             pred, std = super().predict(X, return_std=True, return_cov=False)
-            pred = pred.reshape(-1, self._n_targets)
             if self._scale_y:
                 pred = self._yscaler.inverse_transform(pred)
                 std *= self._yscaler.scale_
-            return pred.reshape(-1, self._n_targets), std.reshape(
-                -1, self._n_targets
-            )
+            return pred, std
 
         elif return_cov:
             pred, cov = super().predict(X, return_std=False, return_cov=True)
-            pred = pred.reshape(-1, self._n_targets)
             if self._scale_y:
                 pred = self._yscaler.inverse_transform(pred)
                 cov *= self._yscaler.scale_**2
-            return pred.reshape(-1, self._n_targets), cov
+            return pred, cov
 
         else:
-            logger.critical("Unknown error in predict")
+            logger.error("Unknown error in predict")
 
     def sample_y(self, X, n_samples=1, random_state=0):
         """Takes a sample from the Gaussian Process. This code is custom
@@ -219,12 +241,9 @@ class EasyGP(GaussianProcessRegressor):
         Returns
         -------
         np.ndarray
-            The drawn samples. Will be of shape
-            ``(len(X), num_targets, num_samples)`` if num_samples > 1, else
-            just ``(len(X), num_targets)``.
+            The drawn samples, which will be of shape
+            ``(X.shape[0], n_samples)``.
         """
-
-        X = X.reshape(-1, self._n_features)
 
         # Run the sampling myself -- This handles all of the scaling
         mu, cov = self.predict(X, return_cov=True)
@@ -232,20 +251,8 @@ class EasyGP(GaussianProcessRegressor):
         # Set the random state
         np.random.seed(random_state)
 
-        # Sample for each target. Usually there will be only one target, but
-        # this should be general
-        if len(mu.shape) == 1 or mu.shape[1] == 1:
-            mu = mu.reshape(-1, 1)
-            cov = cov[..., None]
-
-        return np.array(
-            [
-                np.random.multivariate_normal(
-                    mu[:, ii], cov[..., ii], n_samples
-                )
-                for ii in range(mu.shape[1])
-            ]
-        ).squeeze()
+        # Get the sample
+        return np.random.multivariate_normal(mu, cov, n_samples).T
 
     def sample_y_reproducibly(self, X, n_samples=1, random_state=0):
         """There is a subtlety when sampling from the Gaussian Process
@@ -291,7 +298,7 @@ class EasyGP(GaussianProcessRegressor):
                 self.sample_y(xx.reshape(1, -1), n_samples, random_state)
                 for xx in X
             ]
-        )
+        ).reshape(X.shape[0], n_samples)
 
     def suggest(self, policy=MaxVariancePolicy(), bounds=None, n_restarts=10):
         """This is a method used in Bayesian optimization and optimal

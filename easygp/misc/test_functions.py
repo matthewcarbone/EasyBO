@@ -60,4 +60,4 @@ def test_function_1(x):
 
     y = 0.2 * x + np.sin(x) * 2.345
     alpha = np.ones_like(y) + np.random.normal(size=y.shape)
-    return y, np.abs(alpha)
+    return y.squeeze(), np.abs(alpha).squeeze()

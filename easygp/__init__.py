@@ -37,11 +37,6 @@ def configure_loggers(
     """Configures the loguru loggers. Note that the loggers are initialized
     using the default values by default.
 
-    .. important::
-
-        logger.critical _always_ terminates the program, either through
-        `COMM.MPI_Abort()` if `run_as_mpi` is True, or `sys.exit(1)` otherwise.
-
     Parameters
     ----------
     stdout_filter : list of str, optional
@@ -58,7 +53,6 @@ def configure_loggers(
 
     logger.remove(None)  # Remove ALL handlers
 
-    # # Use the MPI ranks if available
     if "DEBUG" in stdout_filter:
         stdout_filter = [xx for xx in stdout_filter if xx != "DEBUG"]
         logger.add(
@@ -82,10 +76,7 @@ def configure_loggers(
         format=stderr_fmt,
     )
 
-    # We always exit on critical
-    logger.add(lambda _: sys.exit(1), level="CRITICAL")
-
-    logger.debug(f"Initializing easygp v{__version__}")
+    logger.debug(f"Initializing easygp version {__version__}")
 
 
 def DEBUG():
