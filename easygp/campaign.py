@@ -13,7 +13,7 @@ from easygp.gp import EasyGP
 from easygp.policy import _TargetPerformance
 
 
-class GPSampler:
+class _GPSampler:
     """A method for deterministically sampling from a single instance of a
     Gaussian Process. Initializes the class with a Gaussian Process and random
     state variable, which should be set to not None to ensure deterministic
@@ -158,42 +158,14 @@ class Campaign:
             self._performance_func.set_target(self._policy._target)
 
         # Set the truth function based on the GP sampler
-        self._truth = GPSampler(deepcopy(self._gp), self._random_state)
+        self._truth = _GPSampler(deepcopy(self._gp), self._random_state)
 
     def _fit(self):
-        """Fits the internal Gaussian Process using the current stored data.
-
-        Returns
-        -------
-        dict
-            A dict with two keys, one for the standard messages and one for
-            warning messages, as output during the fitting processes.
-        """
+        """Fits the internal Gaussian Process using the current stored data."""
 
         self._gp = deepcopy(self._original_gp)
-        warning_messages = []
-        messages = []
-
-        t0 = time()
-        with warnings.catch_warnings(record=True) as caught_warnings:
-            self._gp.fit(self._X, self._y, self._alpha)
-        dt = time() - t0
-
-        bad_fit = False
-        FIT_WARNING = (
-            "Decreasing the bound and calling fit again may find a better"
-        )
-        for warn in caught_warnings:
-            if FIT_WARNING in str(warn.message):
-                msg = f"(bad fit) {self._gp.kernel_} fit in {dt:.01} s"
-                warning_messages.append(msg)
-                bad_fit = True
-        if not bad_fit:
-            messages.append(f"{self._gp.kernel_} fit in {dt:.01} s")
-
+        self._gp.fit(self._X, self._y, self._alpha)
         self._iteration += 1
-
-        return {"messages": messages, "warnings": warning_messages}
 
     def _update(self, X, y, alpha):
         """Updates the data with new X, y and alpha values. The data is always
@@ -206,14 +178,13 @@ class Campaign:
         alpha : np.ndarray
         """
 
-        X = X.reshape(-1, self._n_features)
-        y = y.reshape(-1, 1)
-        alpha = alpha.reshape(-1, 1)
-        self._X = np.concatenate([self._X, X], axis=0)
-        self._y = np.concatenate([self._y, y], axis=0)
-        self._alpha = np.concatenate([self._alpha, alpha], axis=0)
+        self._X = np.concatenate(
+            [self._X, X.reshape(-1, self._n_features)], axis=0
+        )
+        self._y = np.concatenate([self._y, y])
+        self._alpha = np.concatenate([self._alpha, alpha])
 
-    def run(self, n=10, n_restarts=10, disable_tqdm=False):
+    def run(self, n=10, n_restarts=10, disable_tqdm=False, avg_noise=None):
         """Runs the campaign.
 
         Parameters
@@ -226,6 +197,10 @@ class Campaign:
         disable_tqdm : bool, optional
             If True, force-disables the progress bar regardless of the
             debugging status.
+        avg_noise : float, optional
+            The noise term to apply to every new sample. If ``None``, will
+            default to the mean of the current noise in the data, with some
+            normal Gaussian noise added for some randomness.
 
         Returns
         -------
@@ -237,8 +212,7 @@ class Campaign:
 
         performance = []
         fit_info = []
-        fit_warnings = []
-        fit_errors = []
+        _warnings = []
 
         logger.info(f"Beginning campaign (n={n})")
         logger.info(f"Policy is {self._policy.__class__.__name__}")
@@ -254,52 +228,58 @@ class Campaign:
                 self._policy.set_ybest(y_best)
                 logger.debug(f"y-best set to {y_best}")
 
-            # Suggest a new point
-            new_X = self._gp.suggest(self._policy, self._bounds, n_restarts)
+            # Catch the warnings for now, we'll handle them later!
+            with warnings.catch_warnings(record=True) as caught_warnings:
 
-            # Get the performance given this new point
-            performance.append(
-                self._performance_func(
-                    self._gp, self._truth, self._bounds, n_restarts
-                ).item()
-            )
+                # Suggest the next point
+                new_X = self._gp.suggest(
+                    self._policy, self._bounds, n_restarts
+                )
 
-            # Get the new truth result for the suggested X value
-            new_y = self._truth(new_X)
-            logger.debug(f"y-value of proposed points {new_y}")
+                # Get the performance given this new point
+                performance.append(
+                    self._performance_func(
+                        self._gp, self._truth, self._bounds, n_restarts
+                    ).item()
+                )
 
-            # As for noise, use the average in the dataset plus/minus one
-            # standard deviation
-            avg_noise = np.array(
-                [np.mean(self._alpha, axis=0)]
-            ) + np.random.normal(scale=self._alpha.std(axis=0))
+                # Get the new truth result for the suggested X value
+                new_y = self._truth(new_X).reshape(
+                    -1,
+                )
+                logger.debug(f"y-value of proposed points {new_y}")
 
-            # Update the datasets stored in _X, _y, and _alpha
-            # print(new_X.shape, new_y.shape, avg_noise.shape)
-            # print(self.X.shape, self.y.shape, self.alpha.shape)
-            self._update(new_X, new_y, avg_noise)
+                # As for noise, use the average in the dataset plus/minus one
+                # standard deviation
+                if avg_noise is None:
+                    noise_y = np.array(
+                        [np.mean(self._alpha, axis=0)]
+                    ) + np.random.normal(scale=self._alpha.std(axis=0))
+                else:
+                    noise_y = avg_noise
 
-            # Refit on the new data and keep track of any warnings
-            fit_res = self._fit()
-            fit_info.extend(fit_res["messages"])
+                # Update the datasets stored in _X, _y, and _alpha
+                self._update(new_X, new_y, noise_y)
 
-            if counter == n - 1:
-                fit_errors.extend(fit_res["warning_messages"])
-            else:
-                fit_warnings.extend(fit_res["warning_messages"])
+                # Refit on the new data and keep track of any warnings
+                self._fit()
 
-        for msg in fit_warnings:
-            logger.warning(msg)
-        for msg in fit_errors:
-            logger.error(msg)
+            _warnings.extend(caught_warnings)
+
+        # Quick modification of the warnings...
+        _warnings = [
+            f"{xx.category.__name__}-{xx.lineno}-{xx.message}"
+            for xx in _warnings
+        ]
+        for warn in list(set(_warnings)):
+            logger.warning(warn)
 
         dt = time() - t0
 
         return {
             "performance": performance,
             "info": fit_info,
-            "warnings": fit_warnings,
-            "errors": fit_errors,
+            "warnings": _warnings,
             "elapsed": dt,
             "pid": getpid(),
         }
@@ -327,7 +307,16 @@ class MultiCampaign:
 
         Parameters
         ----------
+        n : TYPE
+            Description
+        n_restarts : int, optional
+            Description
         n_jobs : TYPE, optional
+            Description
+
+        Returns
+        -------
+        TYPE
             Description
         """
 

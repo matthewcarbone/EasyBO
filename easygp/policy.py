@@ -21,8 +21,6 @@ from scipy.optimize import minimize
 from easygp import logger
 
 
-# TODO: consider making this such that the optimization only acts between
-# 0 and 1.
 def optimize(f, bounds, n_restarts=10):
     """Wrapper for the scipy.optimize.minimize class. This operates under the
     assumption that the input data is scaled to minimum 0 and maximum 1 at all
@@ -67,7 +65,7 @@ def optimize(f, bounds, n_restarts=10):
         logger.critical("Optimization unsuccessful")
         raise RuntimeError
 
-    return min_x
+    return min_x.reshape(-1, len(bounds))
 
 
 class BasePolicy(ABC):
@@ -289,6 +287,6 @@ class _TargetPerformance:
         float
         """
 
-        estimated = self._policy.suggest(gp, bounds, n_restarts=n_restarts)
+        estimated = gp.suggest(self._policy, bounds, n_restarts=n_restarts)
         gt = truth(estimated)
         return -self._policy.objective(gt)

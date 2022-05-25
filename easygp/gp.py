@@ -109,7 +109,7 @@ class EasyGP(GaussianProcessRegressor):
 
         if len(y.shape) == 1:
             pass
-        elif len(y.shape > 1) and y.shape[1] > 1:
+        elif len(y.shape) > 1 and y.shape[1] > 1:
             logger.error(
                 "y input shape should be of either (samples, ) or (samples, 1)"
             )
@@ -148,14 +148,6 @@ class EasyGP(GaussianProcessRegressor):
 
         logger.debug(f"Fitting on shapes X ({X.shape}) -> y ({y.shape})")
         super().fit(X, y)
-
-        if isinstance(self.kernel_, RBF):
-            ls = self.kernel_.get_params()["length_scale"]
-            if ls < 1e-3:
-                logger.warning(
-                    f"Small RBF kernel length scale {ls:.02f} could indicate a"
-                    "poor fit"
-                )
 
     def predict(self, X, return_std=False, return_cov=False):
         """A lightweight wrapper for `scikit-learn's Gaussian Process Regressor
@@ -295,7 +287,9 @@ class EasyGP(GaussianProcessRegressor):
 
         return np.array(
             [
-                self.sample_y(xx.reshape(1, -1), n_samples, random_state)
+                self.sample_y(
+                    xx.reshape(1, self._n_features), n_samples, random_state
+                )
                 for xx in X
             ]
         ).reshape(X.shape[0], n_samples)
@@ -313,18 +307,7 @@ class EasyGP(GaussianProcessRegressor):
         bounds : list of tuple, optional
             A list of tuple or lists that contains the minimum and maximum
             bound for those dimensions. The length of bounds should be equal to
-            the number of input features of the function. E.g., for three
-            features where each is between 0 and 1,
-            ``bounds=[(0, 1), (0, 1), (0, 1)]``. If ``bounds`` is ``None``,
-            then the default bounds are simply the minimum and maximum of what
-            the EasyGP was fitted on.
-
-            .. warning::
-
-                The default behavior to find the ``bounds`` if they are not
-                provided is to use the X-scaler to unscale the saved training
-                data. If the EasyGP was originally fitted with scaling
-                disabled, then scaling should also be disabled here.
+            the number of input features of the function.
         n_restarts : int, optional
             The number of times to randomly try the fitting procedure.
 
@@ -335,12 +318,20 @@ class EasyGP(GaussianProcessRegressor):
         """
 
         if bounds is None:
-            if self._scale_X:
-                X = self._Xscaler.inverse_transform(self.X_train_)
-            else:
-                X = self.X_train_
-            mins = X.min(axis=0)
-            maxs = X.max(axis=0)
-            bounds = [(m0, mf) for m0, mf in zip(mins, maxs)]
+            new_bounds = [[0.0, 1.0] for _ in range(self._n_features)]
 
-        return policy.suggest(self, bounds, n_restarts=n_restarts)
+        else:
+            # Bounds is a list of tuples, where the list is of the same length
+            # as the number of dimensions as X, and the list of each tuple
+            # is 2 (min and max).
+            new_bounds = np.array(bounds)  # n_dim x 2
+            new_bounds = self._Xscaler.transform(new_bounds.T)  # 2 x n_dim
+            new_bounds = new_bounds.T.tolist()
+
+        with self.disable_scalers(disable_X=True, disable_y=False):
+            suggested = policy.suggest(self, new_bounds, n_restarts=n_restarts)
+
+        # Need to then unscale the suggested point
+        return self._Xscaler.inverse_transform(
+            suggested.reshape(-1, self._n_features)
+        )
