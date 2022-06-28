@@ -181,3 +181,59 @@ def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
             "observed_pred": observed_pred
         }
     return observed_pred
+
+
+def get_training_data(*, model):
+    """Helper function for the user: easily extracts the training features and
+    targets from the model.
+
+    Parameters
+    ----------
+    model : botorch.models.Model
+
+    Returns
+    -------
+    tuple
+        Two numpy arrays, one for the training inputs, one for the training
+        targets.
+    """
+
+    return model.train_inputs[0].detach().numpy(), \
+        model.train_targets.detach().numpy()
+
+
+def tell(
+    *,
+    model,
+    new_x,
+    new_y,
+    device=None
+):
+    """Returns a new model with updated data. This implicitly conditions the
+    model on the new data but without modifying the previous model's
+    hyperparameters.
+
+    .. warning::
+
+         The input shapes of the new x and y values must be correct otherwise
+         errors will be thrown.
+
+    Parameters
+    ----------
+    model : botorch.models.Model
+    new_x : array_like
+        The new input data.
+    new_y : array_like
+        The new target data.
+    device : None, optional
+        Default or provided device.
+
+    Returns
+    -------
+    botorch.models.Model
+        A new model conditioned on the previous + new observations.
+    """
+
+    new_x = _to_float32_tensor(new_x, device=device)
+    new_y = _to_float32_tensor(new_y, device=device)
+    return model.condition_on_observations(new_x, new_y)

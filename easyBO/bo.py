@@ -4,7 +4,6 @@ from botorch.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch.optim import optimize_acqf
 from botorch.utils.transforms import t_batch_mode_transform, \
     concatenate_pending_points
-
 import torch
 
 
@@ -83,7 +82,7 @@ def ask(
         Description
     """
 
-    bounds = torch.tensor(bounds, dtype=torch.float32).reshape(-1, 2).T
+    bounds = torch.tensor(bounds).float().reshape(-1, 2).T
 
     if isinstance(acquisition_function, str):
         if acquisition_function == "EI":

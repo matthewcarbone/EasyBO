@@ -11,8 +11,8 @@ def _to_float32_tensor(x, device=DEVICE):
         return None
 
     if isinstance(x, np.ndarray):
-        x = torch.tensor(x.copy(), dtype=torch.float32)
+        x = torch.tensor(x.copy()).float()
 
-    x = x.clone()
+    x = x.clone().float()
     x = x.to(device)
     return x
