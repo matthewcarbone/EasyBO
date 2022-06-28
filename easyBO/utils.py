@@ -2,12 +2,17 @@ import numpy as np
 import torch
 
 
-def _to_tensor(x):
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _to_float32_tensor(x, device=DEVICE):
 
     if x is None:
         return None
 
     if isinstance(x, np.ndarray):
-        return torch.tensor(x.copy(), dtype=torch.float32)
+        x = torch.tensor(x.copy(), dtype=torch.float32)
 
-    return x.clone()
+    x = x.clone()
+    x = x.to(device)
+    return x

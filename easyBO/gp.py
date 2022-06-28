@@ -12,7 +12,7 @@ import gpytorch
 from botorch.models import SingleTaskGP
 
 
-from easyBO.utils import _to_tensor
+from easyBO.utils import _to_float32_tensor, DEVICE
 
 
 def get_single_task_gp_regressor(
@@ -24,6 +24,7 @@ def get_single_task_gp_regressor(
     covar_module=gpytorch.kernels.ScaleKernel(
         gpytorch.kernels.RBFKernel()
     ),
+    device=DEVICE,
     **kwargs
 ):
     """Summary
@@ -42,18 +43,26 @@ def get_single_task_gp_regressor(
         stable/means.html>`_ for more details.
     covar_module : gpytorch.kernels, optional
         Kernel used in the covariance function.
+    device : str, optional
+        The device to put the model on. Defaults to "cuda" if a GPU is
+        available, else "cpu".
     **kwargs
         Extra keyword arguments to pass to ``SingleTaskGP``.
     """
 
-    return SingleTaskGP(
-        train_X=_to_tensor(train_x),
-        train_Y=_to_tensor(train_y),
+    x = _to_float32_tensor(train_x, device=device)
+    y = _to_float32_tensor(train_y, device=device)
+
+    model = SingleTaskGP(
+        train_X=x,
+        train_Y=y,
         likelihood=likelihood,
         mean_module=mean_module,
         covar_module=covar_module,
         **kwargs,
     )
+
+    return model.to(device)
 
 
 def train_gp_hyperparameters(
@@ -65,6 +74,7 @@ def train_gp_hyperparameters(
     optimizer_kwargs={"lr": 0.1},
     training_iter=100,
     print_frequency=5,
+    device=DEVICE,
     verbose=True
 ):
     """Summary
@@ -89,8 +99,8 @@ def train_gp_hyperparameters(
         Description
     """
 
-    train_x = _to_tensor(train_x)
-    train_y = _to_tensor(train_y)
+    train_x = _to_float32_tensor(train_x, device=device)
+    train_y = _to_float32_tensor(train_y, device=device)
 
     model.train()
 
@@ -108,6 +118,8 @@ def train_gp_hyperparameters(
         # Standard training loop...
         _optimizer.zero_grad()
         output = model(train_x)
+
+        # The train_y.flatten() will only work for single task models!
         loss = -mll(output, train_y.flatten())
         loss.backward()
 
@@ -122,10 +134,10 @@ def train_gp_hyperparameters(
         _optimizer.step()
         losses.append(loss.item())
 
-    return losses, mll
+    return losses
 
 
-def infer(*, model, grid, parsed=True, use_likelihood=True):
+def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
     """Summary
 
     Parameters
@@ -150,7 +162,7 @@ def infer(*, model, grid, parsed=True, use_likelihood=True):
     dict or gpytorch.distributions.MultivariateNormal
     """
 
-    grid = _to_tensor(grid)
+    grid = _to_float32_tensor(grid, device=device)
 
     model.eval()
 
