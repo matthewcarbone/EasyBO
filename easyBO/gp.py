@@ -7,6 +7,8 @@ user tries them, e.g. ambiguities in choosing the kernels. The classes here
 abstract away that difficulty (and others) by default.
 """
 
+from copy import deepcopy
+
 import torch
 import gpytorch
 from botorch.models import SingleTaskGP
@@ -62,7 +64,7 @@ def get_single_task_gp_regressor(
         **kwargs,
     )
 
-    return model.to(device)
+    return deepcopy(model.to(device))
 
 
 def train_gp_hyperparameters(
