@@ -119,7 +119,7 @@ def get_gp(
     return deepcopy(model.to(device))
 
 
-def _get_gp_type_train(gp_type, model):
+def _get_gp_type(gp_type, model):
     if gp_type is None:
         warn("gp_type not specified: will attempt to detect automatically...")
         if isinstance(
@@ -176,7 +176,7 @@ def train_gp_(
         Description
     """
 
-    gp_type = _get_gp_type_train(gp_type, model)
+    gp_type = _get_gp_type(gp_type, model)
 
     # Handle setting the training data in case it wasn't provided.
     if train_x is None:
@@ -295,7 +295,8 @@ def tell(
     model,
     new_x,
     new_y,
-    device=None
+    gp_type=None,
+    device=None,
 ):
     """Returns a new model with updated data. This implicitly conditions the
     model on the new data but without modifying the previous model's
@@ -322,6 +323,10 @@ def tell(
         A new model conditioned on the previous + new observations.
     """
 
+    gp_type = _get_gp_type(gp_type, model)
     new_x = _to_float32_tensor(new_x, device=device)
-    new_y = _to_float32_tensor(new_y, device=device)
+    if gp_type == "regression":
+        new_y = _to_float32_tensor(new_y, device=device)
+    else:
+        new_y = _to_long_tensor(new_y, device=device)
     return model.condition_on_observations(new_x, new_y)
