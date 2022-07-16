@@ -1,7 +1,7 @@
 Authors
 =======
 
-The ``easygp`` software package was developed at Brookhaven National Laboratory (BNL) as part of a "Type A" `Laboratory Directed Research and Development (LDRD) <https://www.bnl.gov/ldrd/>`_ funding program (LDRD 22-059).
+The ``easyBO`` software package was developed at Brookhaven National Laboratory (BNL) as part of a "Type A" `Laboratory Directed Research and Development (LDRD) <https://www.bnl.gov/ldrd/>`_ funding program (LDRD 22-059).
 
 Maintainers
 -----------
