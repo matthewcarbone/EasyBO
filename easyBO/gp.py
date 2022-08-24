@@ -66,7 +66,7 @@ def get_gp(
     covar_module=DEFAULT_COVAR_MODULE,
     device=DEVICE,
     gp_type=None,
-    **kwargs
+    **kwargs,
 ):
     """Returns the appropriate botorch GP model depending on the type of
     gp (regression or classification).
@@ -91,6 +91,8 @@ def get_gp(
     device : str, optional
         The device to put the model on. Defaults to "cuda" if a GPU is
         available, else "cpu".
+    gp_type : None, optional
+        TODO
     **kwargs
         Extra keyword arguments to pass to ``SingleTaskGP``.
     """
@@ -124,7 +126,7 @@ def _get_gp_type(gp_type, model):
         warn("gp_type not specified: will attempt to detect automatically...")
         if isinstance(
             model.likelihood,
-            gpytorch.likelihoods.DirichletClassificationLikelihood
+            gpytorch.likelihoods.DirichletClassificationLikelihood,
         ):
             return "classification"
         return "regression"
@@ -145,13 +147,13 @@ def train_gp_(
     print_frequency=5,
     device=DEVICE,
     gp_type=None,
-    verbose=True
+    verbose=True,
 ):
     """Trains the provided botorch model. The methods used here are different
     than botorch's boilerplate ``fit_gpytorch_model``, and the function will
     automatically try to detect what type of problem (regression or
     classification) that is being performed if it's not specified explicitly.
-    
+
     Parameters
     ----------
     model : TYPE
@@ -266,7 +268,7 @@ def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
             "mean": observed_pred.mean.detach().numpy(),
             "mean-2sigma": lower.detach().numpy(),
             "mean+2sigma": upper.detach().numpy(),
-            "observed_pred": observed_pred
+            "observed_pred": observed_pred,
         }
     return observed_pred
 
@@ -286,8 +288,10 @@ def get_training_data(*, model):
         targets.
     """
 
-    return model.train_inputs[0].detach().numpy(), \
-        model.train_targets.detach().numpy()
+    return (
+        model.train_inputs[0].detach().numpy(),
+        model.train_targets.detach().numpy(),
+    )
 
 
 def tell(
