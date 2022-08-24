@@ -1,9 +1,12 @@
+import botorch  # noqa
 from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 from botorch.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch.optim import optimize_acqf
-from botorch.utils.transforms import t_batch_mode_transform, \
-    concatenate_pending_points
+from botorch.utils.transforms import (
+    t_batch_mode_transform,
+    concatenate_pending_points,
+)
 import torch
 
 
@@ -13,7 +16,7 @@ def acquisition_function_factory(cls):
     the grid coordinate, which can allow one to weight the resultant
     acquisition function by e.g. the cost of moving a motor to a particular
     position.
-    
+
     Returns
     -------
     type
@@ -23,24 +26,25 @@ def acquisition_function_factory(cls):
     """
 
     class AcquisitionFunction(cls):
-
         def __init__(self, *args, custom_weight=lambda x: 1.0, **kwargs):
             super().__init__(*args, **kwargs)
             self._custom_weight = custom_weight
 
         def forward(self, X):
-            weight_tensor = torch.atleast_1d(self._custom_weight(X))
+            weight = self._custom_weight(X)
+            if isinstance(weight, (float, int)):
+                weight = torch.tensor(weight)
+            weight = torch.atleast_1d(weight)
             forward_tensor = super().forward(X)
 
             # Hack to deal with the shapes
-            returned = (weight_tensor.T * forward_tensor.T).T
+            returned = (weight.T * forward_tensor.T).T
             return returned.squeeze()
 
     return AcquisitionFunction
 
 
 class _MaxVariance(AnalyticAcquisitionFunction):
-
     def __init__(self, model, **kwargs):
         super().__init__(model=model, **kwargs)
 
@@ -50,13 +54,13 @@ class _MaxVariance(AnalyticAcquisitionFunction):
             X=X, posterior_transform=self.posterior_transform
         )
         mean = posterior.mean
-        view_shape = \
+        view_shape = (
             mean.shape[:-2] if mean.shape[-2] == 1 else mean.shape[:-1]
+        )
         return posterior.variance.view(view_shape)
 
 
 class _qMaxVariance(MCAcquisitionFunction):
-
     def __init__(
         self,
         model,
@@ -97,7 +101,7 @@ def ask(
         "num_restarts": 5,
         "raw_samples": 20,
     },
-    weight=lambda x: 1.0
+    weight=lambda x: 1.0,
 ):
     """Asks the model to sample the next point(s) based on the current state
     of the posterior and the given acquisition function.
@@ -145,13 +149,9 @@ def ask(
     acquisition_function = acquisition_function_factory(acquisition_function)
 
     aq = acquisition_function(
-        model,
-        custom_weight=weight,
-        **acquisition_function_kwargs
+        model, custom_weight=weight, **acquisition_function_kwargs
     )
     candidate, acq_value = optimize_acqf(
-        aq,
-        bounds=bounds,
-        **optimize_acqf_kwargs
+        aq, bounds=bounds, **optimize_acqf_kwargs
     )
     return candidate
