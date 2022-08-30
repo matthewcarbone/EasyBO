@@ -8,13 +8,13 @@ abstract away that difficulty (and others) by default.
 """
 
 from copy import deepcopy
-from warnings import warn
 
 import torch
 import gpytorch
 from botorch.models import SingleTaskGP
 
 from easyBO.utils import _to_float32_tensor, _to_long_tensor, DEVICE
+from easyBO.logger import logger
 
 
 DEFAULT_MEAN_MODULE = gpytorch.means.ConstantMean()
@@ -23,12 +23,14 @@ DEFAULT_COVAR_MODULE = gpytorch.kernels.ScaleKernel(
 )
 
 
-def _get_gp_type_get_gp(gp_type):
-    if gp_type is None:
-        warn('gp_type not specified: assuming gp_type=="regression"')
-        return "regression"
+def _gp_type_from_str(gp_type):
     if gp_type not in ["regression", "classification"]:
-        raise ValueError(f"Unknown gp_type {gp_type}")
+        msg = (
+            f"Unknown gp_type {gp_type}, must be either 'regression' or "
+            "'classification'"
+        )
+        logger.critical(msg)
+        raise ValueError(msg)
     return gp_type
 
 
@@ -48,7 +50,7 @@ def _get_likelihood_and_y(gp_type, likelihood, y):
     )
 
     if likelihood is not None:
-        warn(
+        logger.warning(
             f"Specified likelihood {likelihood} will be overwritten with "
             "the DirichletClassificationLikelihood, since classification "
             "was specified"
@@ -61,11 +63,11 @@ def get_gp(
     *,
     train_x,
     train_y,
+    gp_type,
     likelihood=None,
     mean_module=DEFAULT_MEAN_MODULE,
     covar_module=DEFAULT_COVAR_MODULE,
     device=DEVICE,
-    gp_type=None,
     **kwargs,
 ):
     """Returns the appropriate botorch GP model depending on the type of
@@ -78,6 +80,7 @@ def get_gp(
     train_y : array_like
         The targets. Note that for classification, these should be one-hot
         encoded, e.g. np.array([0, 1, 2, 1, 2, 0, 0]).
+    gp_type : {"regression", "classification"}
     likelihood : gpytorch.likelihoods, optional
         Likelihood for initializing the GP. Recommended to keep the default:
         ``gpytorch.likelihoods.GaussianLikelihood()`` for regression problems,
@@ -91,13 +94,11 @@ def get_gp(
     device : str, optional
         The device to put the model on. Defaults to "cuda" if a GPU is
         available, else "cpu".
-    gp_type : None, optional
-        TODO
     **kwargs
         Extra keyword arguments to pass to ``SingleTaskGP``.
     """
 
-    gp_type = _get_gp_type_get_gp(gp_type)
+    gp_type = _gp_type_from_str(gp_type)
 
     # Convert the provided (likely numpy) arrays to the appropriate torch
     # tensors of the correct types
@@ -121,14 +122,21 @@ def get_gp(
     return deepcopy(model.to(device))
 
 
-def _get_gp_type(gp_type, model):
+def _detect_gp_type_from_model(gp_type, model):
     if gp_type is None:
-        warn("gp_type not specified: will attempt to detect automatically...")
         if isinstance(
             model.likelihood,
             gpytorch.likelihoods.DirichletClassificationLikelihood,
         ):
+            logger.debug(
+                "DirichletClassificationLikelihood detected, assuming "
+                "classification problem"
+            )
             return "classification"
+        logger.debug(
+            f"{model.likelihood.__class__.__name__} detected, "
+            "assuming regression problem"
+        )
         return "regression"
 
     if gp_type not in ["regression", "classification"]:
@@ -178,7 +186,7 @@ def train_gp_(
         Description
     """
 
-    gp_type = _get_gp_type(gp_type, model)
+    gp_type = _detect_gp_type_from_model(gp_type, model)
 
     # Handle setting the training data in case it wasn't provided.
     if train_x is None:
@@ -216,7 +224,7 @@ def train_gp_(
             _loss = loss.item()
             ls = model.covar_module.base_kernel.lengthscale.mean().item()
             noise = model.likelihood.noise.mean().item()
-            print(
+            logger.info(
                 f"{ii}/{training_iter}\t\t loss={_loss:.03f} lengthscale="
                 f"{ls:.03f} noise={noise:.03f}"
             )
@@ -327,7 +335,7 @@ def tell(
         A new model conditioned on the previous + new observations.
     """
 
-    gp_type = _get_gp_type(gp_type, model)
+    gp_type = _detect_gp_type_from_model(gp_type, model)
     new_x = _to_float32_tensor(new_x, device=device)
     if gp_type == "regression":
         new_y = _to_float32_tensor(new_y, device=device)

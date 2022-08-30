@@ -9,6 +9,8 @@ from botorch.utils.transforms import (
 )
 import torch
 
+from easyBO.logger import logger
+
 
 def acquisition_function_factory(cls):
     """Intended as a decorator for adding a ``custom_weight`` attribute to the
@@ -26,20 +28,57 @@ def acquisition_function_factory(cls):
     """
 
     class AcquisitionFunction(cls):
-        def __init__(self, *args, custom_weight=lambda x: 1.0, **kwargs):
+        def _weighted_result(self, x, acq_values):
+            """Executes the weighting scheme before sending the result of ``x``
+            to the ``super().forward()`` method.
+
+            Parameters
+            ----------
+            x : torch.tensor
+                A torch tensor of shape
+                [num_restarts or raw_samples, q, n_dimensions].
+            acq_values : torch.tensor
+                The values of the acquisition function.
+
+            Returns
+            -------
+            torch.tensor
+            """
+
+            if self._custom_weight is None:
+                return acq_values
+
+            # Otherwise, we need to multiply the weight into the last
+            # dimension element-wise
+            N = x.shape[0]
+            q = x.shape[1]
+            d = x.shape[2]
+            x_reshaped = x.reshape(-1, d)  # ~ [N x q, d]
+
+            # _custom_weight treats each dimension like x[0], x[1], etc.
+            # weights ~ [N x q]
+            weights = self._custom_weight(x_reshaped)
+            weights = weights.reshape(N, q).mean(axis=1)
+
+            return acq_values * weights
+
+        def __init__(self, *args, custom_weight=None, **kwargs):
             super().__init__(*args, **kwargs)
+
+            # A constant does not change the behavior of the acqusition
+            # function
+            if isinstance(custom_weight, (int, float)):
+                custom_weight = None
+
             self._custom_weight = custom_weight
 
         def forward(self, X):
-            weight = self._custom_weight(X)
-            if isinstance(weight, (float, int)):
-                weight = torch.tensor(weight)
-            weight = torch.atleast_1d(weight)
-            forward_tensor = super().forward(X)
+            """Forward execution for the acquisition function. Note that
+            ``X is a set of coordinates, where the dimensions are
+            [num_restarts or raw_samples, q, dims]."""
 
-            # Hack to deal with the shapes
-            returned = (weight.T * forward_tensor.T).T
-            return returned.squeeze()
+            f = super().forward(X)
+            return self._weighted_result(X, f)
 
     return AcquisitionFunction
 
@@ -95,13 +134,13 @@ def ask(
     model,
     bounds=[[0, 1]],
     acquisition_function=UpperConfidenceBound,
-    acquisition_function_kwargs={"beta": 0.1},
+    acquisition_function_kwargs=dict(),
     optimize_acqf_kwargs={
         "q": 1,
         "num_restarts": 5,
         "raw_samples": 20,
     },
-    weight=lambda x: 1.0,
+    weight=None,
 ):
     """Asks the model to sample the next point(s) based on the current state
     of the posterior and the given acquisition function.
@@ -119,7 +158,10 @@ def ask(
         Description
     """
 
+    logger.debug(f"ask provided with args: {locals()}")
+
     bounds = torch.tensor(bounds).float().reshape(-1, 2).T
+    logger.debug(f"ask bounds set to {bounds}")
 
     # Instantiate assuming base of botorch.acquisition
     if isinstance(acquisition_function, str):
@@ -131,6 +173,10 @@ def ask(
 
         # Custom definitions
         except AttributeError:
+            logger.debug(
+                f"Acquisition function signature {acquisition_function} "
+                "not found in botorch.acquisition"
+            )
             if acquisition_function == "EI":
                 acquisition_function = ExpectedImprovement
             elif acquisition_function == "UCB":
@@ -140,10 +186,16 @@ def ask(
             elif acquisition_function == "qMaxVar":
                 acquisition_function = _qMaxVariance
             else:
-                raise ValueError(
+                msg = (
                     "Unknown acquisition function alias "
                     f"{acquisition_function}"
                 )
+                logger.critical(msg)
+                raise ValueError(msg)
+
+    logger.debug(
+        f"acquisition function in use: {acquisition_function.__name__}"
+    )
 
     # Add custom_weight method
     acquisition_function = acquisition_function_factory(acquisition_function)
@@ -154,4 +206,6 @@ def ask(
     candidate, acq_value = optimize_acqf(
         aq, bounds=bounds, **optimize_acqf_kwargs
     )
+    logger.debug(f"candidates: {candidate}")
+    logger.debug(f"acquisition function value: {acq_value}")
     return candidate
