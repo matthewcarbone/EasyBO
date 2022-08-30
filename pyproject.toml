@@ -1,9 +1,72 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "EasyBO"
+authors = [
+    {"name" = "Matthew R. Carbone", "email" = "mcarbone@bnl.gov"}
+]
+maintainers = [
+    {"name" = "Matthew R. Carbone", "email" = "mcarbone@bnl.gov"}
+]
+description = "Bayesian optimization and Gaussian Processes made easy"
+readme = "README.rst"
+requires-python = ">=3.7"
+license = {"file" = "LICENSE"}
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "gpytorch",
+    "botorch",
+    "loguru"
+]
+
+# Dynamic version reads __version__ directly from my_package.__init__
+dynamic = ["version"]
+
+
+[project.optional-dependencies]
+test = [
+    "codecov",
+    "coverage",
+    "flake8",
+    "pytest",
+    "pytest-cov",
+    "black",
+    "nbstripout",
+    "pre-commit",
+]
+doc = [
+    "sphinx",
+    "numpydoc",
+    "sphinx-copybutton",
+    "sphinx_rtd_theme",
+    "ipython",
+]
+
+[tool.setuptools]
+packages = ["easyBO"]
+
 [tool.black]
 line-length = 79
 include = '\.pyi?$'
 exclude = '''
 /(
-    \.git
+  | \.git
   | \.hg
   | \.mypy_cache
   | \.tox
@@ -12,11 +75,6 @@ exclude = '''
   | buck-out
   | build
   | dist
-  | easygp/_version.py
-  | versioneer.py 
-
-  # The following are specific to Black, you probably don't want those.
-  | blib2to3
-  | tests/data
+  | docs/source/conf.py
 )/
 '''
