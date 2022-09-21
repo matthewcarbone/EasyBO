@@ -9,6 +9,7 @@ from botorch.utils.transforms import (
 )
 import torch
 
+from easyBO.utils import _to_float32_tensor, DEVICE
 from easyBO.logger import logger
 
 
@@ -143,39 +144,54 @@ def ask(
         "raw_samples": 20,
     },
     weight=None,
+    device=DEVICE,
 ):
     """Asks the model to sample the next point(s) based on the current state
     of the posterior and the given acquisition function.
 
     Parameters
     ----------
-    model : TYPE
-        Description
+    model : SingleTaskGP
+        The trained/conditioned model used to produce the next point.
     bounds : list, optional
         A list of tuple where the first entry of each tuple is the start of the
         bound and the second is the end.
-    acquisition_function : TYPE
-        Description
-    X_pending : None, optional
-        Description
-    fixed_features : None, optional
-        Description
+    acquisition_function
+        Either a ``botorch.acqusition`` function e.g. ``UpperConfidenceBound``,
+        or a string matching the function name from that library.
+    X_pending : array_like, optional
+        These are samples that are "pending", meaning they will be run but have
+        not been run yet. This is useful when doing joint optimization using
+        MC-based acqusition functions. For example, if it is known that certain
+        inputs will be run, but have not been run yet, ``X_pending`` should be
+        set to those inputs. Optimization will then be performed assuming those
+        points are pending. If the points to be run are given as an `n x d`
+        matrix, this fixes certain rows. This is passed directly to the
+        acquisition function.
+    fixed_features : dict, optional
+        This is a way to fix certain features during optimization. It is
+        passed directly to the optimization scheme in BoTorch. If the points to
+        be run are given as an `n x d` matrix, this fixes certain columns.
     acquisition_function_kwargs : dict, optional
-        Description
+        Other keyword arguments passed to the acquisition function.
     optimize_acqf_kwargs : dict, optional
-        Description
-    weight : None, optional
-        Description
+        Other keyword arguments passed to ``optimize_acqf``.
+    weight : callable, optional
+        A custom weight applied to the acqusition function directly. This is
+        callable function which takes the position as input. The larger the
+        weight, the more that point is favored.
+    device : str
+        The device on which to place any arrays passed to ``ask``.
 
     Returns
     -------
-    TYPE
-        Description
+    numpy.ndarray
+        The next points to sample.
 
     Raises
     ------
     ValueError
-        Description
+        If an incorrect acqusition function name is provided.
     """
 
     logger.debug(f"ask provided with args: {locals()}")
@@ -219,6 +235,9 @@ def ask(
 
     # Add custom_weight method
     acquisition_function = acquisition_function_factory(acquisition_function)
+
+    if X_pending is not None:
+        X_pending = _to_float32_tensor(X_pending, device=device)
 
     aq = acquisition_function(
         model,

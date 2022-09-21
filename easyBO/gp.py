@@ -250,9 +250,9 @@ def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
     Parameters
     ----------
     model : gpytorch.model
-        Description
+        The model on which to perform inference.
     grid : array_like
-        Description
+        The grid on which to perform inference.
     parsed : bool, optional
         If True, returns a dictionary with the keys "mean",
         "mean-2sigma" and "mean+2sigma", representing the mean prediction of
