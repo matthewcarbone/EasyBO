@@ -134,6 +134,8 @@ def ask(
     model,
     bounds=[[0, 1]],
     acquisition_function=UpperConfidenceBound,
+    X_pending=None,
+    fixed_features=None,
     acquisition_function_kwargs=dict(),
     optimize_acqf_kwargs={
         "q": 1,
@@ -154,7 +156,25 @@ def ask(
         bound and the second is the end.
     acquisition_function : TYPE
         Description
+    X_pending : None, optional
+        Description
+    fixed_features : None, optional
+        Description
     acquisition_function_kwargs : dict, optional
+        Description
+    optimize_acqf_kwargs : dict, optional
+        Description
+    weight : None, optional
+        Description
+
+    Returns
+    -------
+    TYPE
+        Description
+
+    Raises
+    ------
+    ValueError
         Description
     """
 
@@ -201,10 +221,17 @@ def ask(
     acquisition_function = acquisition_function_factory(acquisition_function)
 
     aq = acquisition_function(
-        model, custom_weight=weight, **acquisition_function_kwargs
+        model,
+        custom_weight=weight,
+        X_pending=X_pending,
+        **acquisition_function_kwargs,
     )
+
     candidate, acq_value = optimize_acqf(
-        aq, bounds=bounds, **optimize_acqf_kwargs
+        aq,
+        bounds=bounds,
+        fixed_features=fixed_features,
+        **optimize_acqf_kwargs,
     )
     logger.debug(f"candidates: {candidate}")
     logger.debug(f"acquisition function value: {acq_value}")

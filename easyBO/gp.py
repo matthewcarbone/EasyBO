@@ -80,7 +80,8 @@ def get_gp(
     train_y : array_like
         The targets. Note that for classification, these should be one-hot
         encoded, e.g. np.array([0, 1, 2, 1, 2, 0, 0]).
-    gp_type : {"regression", "classification"}
+    gp_type : str
+        The type of GP to return, either "regression" or "classification".
     likelihood : gpytorch.likelihoods, optional
         Likelihood for initializing the GP. Recommended to keep the default:
         ``gpytorch.likelihoods.GaussianLikelihood()`` for regression problems,
@@ -96,6 +97,10 @@ def get_gp(
         available, else "cpu".
     **kwargs
         Extra keyword arguments to pass to ``SingleTaskGP``.
+
+    Returns
+    -------
+    SingleTaskGP
     """
 
     gp_type = _gp_type_from_str(gp_type)
@@ -155,7 +160,6 @@ def train_gp_(
     print_frequency=5,
     device=DEVICE,
     gp_type=None,
-    verbose=True,
 ):
     """Trains the provided botorch model. The methods used here are different
     than botorch's boilerplate ``fit_gpytorch_model``, and the function will
@@ -164,26 +168,28 @@ def train_gp_(
 
     Parameters
     ----------
-    model : TYPE
-        Description
-    train_x : None, optional
-        Description
-    train_y : None, optional
-        Description
-    optimizer : TYPE, optional
-        Description
+    model : SingleTaskGP
+        The model to train.
+    train_x : array_like
+        The inputs. If None, defaults to the model.train_inputs.
+    train_y : array_like
+        The targets. Note that for classification, these should be one-hot
+        encoded, e.g. np.array([0, 1, 2, 1, 2, 0, 0]). If None, defaults to
+        model.train_targets.
+    optimizer : torch.optim, optional
+        The optimizer to use to train the GP.
     optimizer_kwargs : dict, optional
-        Description
+        Keyword arguments to pass to the optimizer.
     training_iter : int, optional
-        Description
+        The number of training iterations to perform.
     print_frequency : int, optional
-        Description
-    device : TYPE, optional
-        Description
-    gp_type : None, optional
-        Description
-    verbose : bool, optional
-        Description
+        The frequency at which to log to the info logger during training. If
+        0 does not print anything during training.
+    device : str, optional
+        Device on which to perform the training.
+    gp_type : str, optional
+        The type of GP to train. See :class:`get_gp`. If None, attempts to
+        determine the type of GP from the model itself.
     """
 
     gp_type = _detect_gp_type_from_model(gp_type, model)
@@ -204,7 +210,8 @@ def train_gp_(
     # Get all of the training objects together
     model.train()
     _optimizer = optimizer(model.parameters(), **optimizer_kwargs)
-    # "Loss" for GPs - the marginal log likelihood
+
+    # Loss for GPs - the marginal log likelihood
     mll = gpytorch.mlls.ExactMarginalLogLikelihood(
         likelihood=model.likelihood, model=model
     )
@@ -219,15 +226,17 @@ def train_gp_(
 
         loss = -mll(output, train_y).sum()
         loss.backward()
-
-        if verbose and ii % (training_iter // print_frequency) == 0:
-            _loss = loss.item()
-            ls = model.covar_module.base_kernel.lengthscale.mean().item()
-            noise = model.likelihood.noise.mean().item()
-            logger.info(
-                f"{ii}/{training_iter}\t\t loss={_loss:.03f} lengthscale="
-                f"{ls:.03f} noise={noise:.03f}"
-            )
+        _loss = loss.item()
+        ls = model.covar_module.base_kernel.lengthscale.mean().item()
+        noise = model.likelihood.noise.mean().item()
+        msg = (
+            f"{ii}/{training_iter} loss={_loss:.03f} lengthscale="
+            f"{ls:.03f} noise={noise:.03f}"
+        )
+        if print_frequency != 0:
+            if ii % (training_iter // print_frequency) == 0:
+                logger.info(msg)
+        logger.debug(msg)
 
         _optimizer.step()
         losses.append(loss.item())
