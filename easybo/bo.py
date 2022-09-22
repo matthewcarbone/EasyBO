@@ -9,8 +9,8 @@ from botorch.utils.transforms import (
 )
 import torch
 
-from easyBO.utils import _to_float32_tensor, DEVICE
-from easyBO.logger import logger
+from easybo.utils import _to_float32_tensor, DEVICE
+from easybo.logger import logger
 
 
 def acquisition_function_factory(cls):

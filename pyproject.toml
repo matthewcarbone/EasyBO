@@ -59,7 +59,7 @@ doc = [
 ]
 
 [tool.setuptools]
-packages = ["easyBO"]
+packages = ["easybo"]
 
 [tool.black]
 line-length = 79

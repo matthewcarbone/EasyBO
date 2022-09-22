@@ -1,6 +1,6 @@
 """Wrappers for the gpytorch and botorch libraries. See
-`here <https://botorch.org/docs/models>`_ for important details about the types
-of models that we wrap.
+`here <https://botorch.org/docs/models>`__ for important details about the
+type of models that we wrap.
 
 Gaussian Processes can often be difficult to get working the first time a new
 user tries them, e.g. ambiguities in choosing the kernels. The classes here
@@ -13,8 +13,8 @@ import torch
 import gpytorch
 from botorch.models import SingleTaskGP
 
-from easyBO.utils import _to_float32_tensor, _to_long_tensor, DEVICE
-from easyBO.logger import logger
+from easybo.utils import _to_float32_tensor, _to_long_tensor, DEVICE
+from easybo.logger import logger
 
 
 DEFAULT_MEAN_MODULE = gpytorch.means.ConstantMean()
@@ -89,7 +89,7 @@ def get_gp(
         choose the right likelihood depending on the type of calculation.
     mean_module : gpytorch.means.Mean, optional
         The mean function of the GP. See `here <https://docs.gpytorch.ai/en/
-        stable/means.html>`_ for more details.
+        stable/means.html>`__ for more details.
     covar_module : gpytorch.kernels, optional
         Kernel used in the covariance function.
     device : str, optional
