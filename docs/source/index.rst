@@ -3,7 +3,7 @@
    :hidden:
 
    installation
-   quickstart
+   tutorials
    modules
 
 Overview
