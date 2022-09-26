@@ -255,3 +255,20 @@ def ask(
     logger.debug(f"candidates: {candidate}")
     logger.debug(f"acquisition function value: {acq_value}")
     return candidate
+
+
+def run_simulated_campaign(*, model, acquisition_functions, samples=10):
+    """Summary
+
+    Parameters
+    ----------
+    model : SingleTaskGP
+        This is th emodel which has already been conditioned on some starting
+        data and will be used in the campaign.
+    acquisition_functions : list
+        A list of acquisition function names
+    samples : int, optional
+        Description
+    """
+
+    ...

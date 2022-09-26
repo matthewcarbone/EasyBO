@@ -9,9 +9,10 @@ abstract away that difficulty (and others) by default.
 
 from copy import deepcopy
 
-import torch
-import gpytorch
 from botorch.models import SingleTaskGP
+import gpytorch
+import numpy as np
+import torch
 
 from easybo.utils import _to_float32_tensor, _to_long_tensor, DEVICE
 from easybo.logger import logger
@@ -290,13 +291,74 @@ def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
     return observed_pred
 
 
+def sample(*, model, grid, samples=10, seed=None, device=DEVICE):
+    """Samples from the provided model.
+
+    Parameters
+    ----------
+    model : gpytorch.model
+        The model from which to sample. Must follow the GPyTorch API style:
+
+        .. code-block:: python
+
+            model(grid).sample(...)
+
+    grid : array_like
+        The grid from which to sample.
+    samples : int, optional
+        Number of samples to draw.
+    seed : None, optional
+        Seeds the random number generator via ``torch.manual_seed``.
+
+    Returns
+    -------
+    numpy.array
+        The array of sampled data, of shape ``samples x len(grid)``.
+    """
+
+    if seed is not None:
+        torch.manual_seed(seed)
+    grid = _to_float32_tensor(grid, device=device)
+    return model(grid).sample(sample_shape=torch.Size([samples])).numpy()
+
+
+def sample_reproducibly(*, model, grid, seed, device=DEVICE):
+    """Summary
+
+    Parameters
+    ----------
+    model : TYPE
+        Description
+    grid : TYPE
+        Description
+    seed : TYPE
+        Description
+    device : TYPE, optional
+        Description
+    """
+
+    grid = _to_float32_tensor(grid, device=device)
+    return np.array(
+        [
+            sample(
+                model=model,
+                grid=np.array([xx]),
+                samples=1,
+                seed=seed,
+                device=device,
+            )
+            for xx in grid
+        ]
+    ).squeeze()
+
+
 def get_training_data(*, model):
     """Helper function for the user: easily extracts the training features and
     targets from the model.
 
     Parameters
     ----------
-    model : botorch.models.Model
+    model : gpytorch.model
 
     Returns
     -------
@@ -330,7 +392,7 @@ def tell(
 
     Parameters
     ----------
-    model : botorch.models.Model
+    model : gpytorch.model
     new_x : array_like
         The new input data.
     new_y : array_like
