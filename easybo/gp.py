@@ -9,8 +9,14 @@ abstract away that difficulty (and others) by default.
 
 from copy import deepcopy
 
-from botorch.models import SingleTaskGP
+import botorch
+from botorch.models import (
+    SingleTaskGP,
+    FixedNoiseGP,
+    HeteroskedasticSingleTaskGP,
+)
 import gpytorch
+from gpytorch.constraints import GreaterThan
 import numpy as np
 import torch
 
@@ -18,398 +24,515 @@ from easybo.utils import _to_float32_tensor, _to_long_tensor, DEVICE
 from easybo.logger import logger
 
 
-DEFAULT_MEAN_MODULE = gpytorch.means.ConstantMean()
-DEFAULT_COVAR_MODULE = gpytorch.kernels.ScaleKernel(
-    gpytorch.kernels.RBFKernel()
-)
+class EasyGP:
+    """Core base class for defining all the primary operations required for an
+    "easy Gaussian Process"."""
 
+    def transform_x(self, x):
+        """Executes a forward transformation of some sort on the input data.
+        This defaults to a simple conversion to a float32 tensor and placing
+        that object on the correct device.
 
-def _gp_type_from_str(gp_type):
-    if gp_type not in ["regression", "classification"]:
-        msg = (
-            f"Unknown gp_type {gp_type}, must be either 'regression' or "
-            "'classification'"
+        Parameters
+        ----------
+        x : array_like
+
+        Returns
+        -------
+        torch.tensor
+        """
+
+        return _to_float32_tensor(x, device=self.device)
+
+    def transform_y(self, y):
+        """Executes a forward transformation of some sort on the output data.
+        This defaults to a simple conversion to a float32 tensor and placing
+        that object on the correct device.
+
+        Parameters
+        ----------
+        y : array_like
+
+        Returns
+        -------
+        torch.tensor
+        """
+
+        return _to_float32_tensor(y, device=self.device)
+
+    @property
+    def device(self):
+        """The device on which to run the calculations and place the model.
+        Follows the PyTorch standard, e.g. "cpu", "gpu:0", etc.
+
+        Returns
+        -------
+        str
+        """
+
+        return self._device
+
+    @device.setter
+    def device(self, device):
+        """Sets the device. This not only changes the device attribute, it will
+        send the model to the new device.
+
+        Parameters
+        ----------
+        device : str
+        """
+
+        self._model.to(device)
+        self._device = device
+
+    @property
+    def likelihood(self):
+        """The likelihood function mapping the values f(x) to the observations
+        y. See `here <https://docs.gpytorch.ai/en/latest/likelihoods.html>`__
+        for more details.
+
+        Returns
+        -------
+        TYPE
+            Description
+        """
+        return self._model.likelihood
+
+    @property
+    def model(self):
+        """Returns the GPyTorch model itself.
+
+        Returns
+        -------
+        botorch.models
+        """
+
+        return self._model
+
+    def _get_current_train_x(self):
+        return self._model.train_inputs[0]
+
+    @property
+    def train_x(self):
+        """The training inputs. Should be of shape ``N_train x d_in``.
+
+        Returns
+        -------
+        numpy.ndarray
+        """
+
+        return self._get_current_train_x().detach().numpy()
+
+    def _get_current_train_y(self):
+        return self._model.train_targets.reshape(-1, 1)
+
+    @property
+    def train_y(self):
+        """The training targets. Should be of shape ``N_train x d_out``. Note
+        that for classification, these should be one-hot encoded, e.g.
+        ``np.array([0, 1, 2, 1, 2, 0, 0])``.
+
+        Returns
+        -------
+        numpy.ndarray
+        """
+
+        return self._get_current_train_y().detach().numpy()
+
+    def _fit_model_(
+        self,
+        *,
+        model,
+        optimizer,
+        optimizer_kwargs,
+        training_iter,
+        print_frequency,
+        heteroskedastic_training=False,
+    ):
+
+        model.train()
+        _optimizer = optimizer(model.parameters(), **optimizer_kwargs)
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+            likelihood=model.likelihood, model=model
         )
-        logger.critical(msg)
-        raise ValueError(msg)
-    return gp_type
+        train_x = self._get_current_train_x()
+        train_y = self._get_current_train_y()
+        mll.to(train_x)
 
+        # Standard training loop...
+        losses = []
+        for ii in range(training_iter + 1):
 
-def _get_likelihood_and_y(gp_type, likelihood, y):
+            _optimizer.zero_grad()
+            output = model(train_x)
 
-    if gp_type == "regression":
-        if len(y.shape) == 1:
-            y = y.reshape(-1, 1)
-        if likelihood is None:
-            return gpytorch.likelihoods.GaussianLikelihood(), y
-        else:
-            return likelihood, y
+            if heteroskedastic_training:
+                loss = -mll(output, train_y, train_x).sum()
+            else:
+                loss = -mll(output, train_y).sum()
+            loss.backward()
+            _loss = loss.item()
+            ls = model.covar_module.base_kernel.lengthscale.mean().item()
+            try:
+                noise = model.likelihood.noise.mean().item()
+            except AttributeError:
+                noise = 0.0
+            msg = (
+                f"{ii}/{training_iter} loss={_loss:.03f} lengthscale="
+                f"{ls:.03f} noise={noise:.03f}"
+            )
+            if print_frequency != 0:
+                if ii % (training_iter // print_frequency) == 0:
+                    logger.info(msg)
+            logger.debug(msg)
 
-    # Classification
-    lh = gpytorch.likelihoods.DirichletClassificationLikelihood(
-        y, learn_additional_noise=True
-    )
+            _optimizer.step()
+            losses.append(loss.item())
 
-    if likelihood is not None:
-        logger.warning(
-            f"Specified likelihood {likelihood} will be overwritten with "
-            "the DirichletClassificationLikelihood, since classification "
-            "was specified"
+        return losses, mll
+
+    def train_(
+        self,
+        *,
+        optimizer=torch.optim.Adam,
+        optimizer_kwargs={"lr": 0.1},
+        training_iter=100,
+        print_frequency=5,
+    ):
+        """Trains the provided botorch model. The methods used here are
+        different than botorch's boilerplate ``fit_gpytorch_model`` and allow
+        for a bit more functionality (which is also documented in some of
+        BoTorch's tutorials).
+
+        Parameters
+        ----------
+        optimizer : torch.optim, optional
+            The optimizer to use to train the GP.
+        optimizer_kwargs : dict, optional
+            Keyword arguments to pass to the optimizer.
+        training_iter : int, optional
+            The number of training iterations to perform.
+        print_frequency : int, optional
+            The frequency at which to log to the info logger during training.
+            If 0 does not print anything during training.
+
+        Returns
+        -------
+        list
+            A list of the losses as a function of epoch aka ``training_iter``.
+        """
+
+        return self._fit_model_(
+            model=self.model,
+            optimizer=optimizer,
+            optimizer_kwargs=optimizer_kwargs,
+            training_iter=training_iter,
+            print_frequency=print_frequency,
+            heteroskedastic_training=False,
         )
 
-    return lh, lh.transformed_targets.T
+    def predict(self, *, grid, parsed=True, use_likelihood=True):
+        """Runs inference on the model in eval mode.
+
+        Parameters
+        ----------
+        grid : array_like
+            The grid on which to perform inference.
+        parsed : bool, optional
+            If True, returns a dictionary with the keys "mean",
+            "mean-2sigma" and "mean+2sigma", representing the mean prediction
+            of the posterior, as well as the mean +/- 2sigma, in addition to
+            the ``gpytorch.distributions.MultivariateNormal`` object. If False,
+            returns the full ``gpytorch.distributions.MultivariateNormal``
+            only.
+        use_likelihood : bool, optional
+            If True, applies the likelihood forward operation to the model
+            forward operation. This is the recommended default behavior.
+            Otherwise, just uses the model forward behavior without accounting
+            for the likelihood.
+
+        Returns
+        -------
+        dict or gpytorch.distributions.MultivariateNormal
+        """
+
+        grid = _to_float32_tensor(grid, device=self.device)
+
+        self.model.eval()
+
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            if use_likelihood:
+                observed_pred = self.likelihood(self.model(grid))
+            else:
+                observed_pred = self.model(grid)
+
+        if parsed:
+            lower, upper = observed_pred.confidence_region()
+            return {
+                "mean": observed_pred.mean.detach().numpy(),
+                "mean-2sigma": lower.detach().numpy(),
+                "mean+2sigma": upper.detach().numpy(),
+                "observed_pred": observed_pred,
+            }
+        return observed_pred
+
+    def sample(self, *, grid, samples=10, seed=None):
+        """Samples from the provided model.
+
+        Parameters
+        ----------
+        grid : array_like
+            The grid from which to sample.
+        samples : int, optional
+            Number of samples to draw.
+        seed : None, optional
+            Seeds the random number generator via ``torch.manual_seed``.
+
+        Returns
+        -------
+        numpy.array
+            The array of sampled data, of shape ``samples x len(grid)``.
+        """
+
+        if seed is not None:
+            torch.manual_seed(seed)
+        grid = _to_float32_tensor(grid, device=self.device)
+        result = self.model(grid).sample(sample_shape=torch.Size([samples]))
+        return result.detach().numpy()
+
+    def sample_reproducibly(self, *, grid, seed):
+        """TODO
+
+        Parameters
+        ----------
+        grid : TYPE
+            Description
+        seed : TYPE
+            Description
+
+        Returns
+        -------
+        TYPE
+            Description
+        """
+
+        return np.array(
+            [
+                self.sample(
+                    grid=np.array([xx]),
+                    samples=1,
+                    seed=seed,
+                )
+                for xx in grid
+            ]
+        ).squeeze()
+
+    def tell_(self, *, new_x, new_y):
+        """Informs the GP about new data. This implicitly conditions the model
+        on the new data but without modifying the previous model's
+        hyperparameters.
+
+        .. warning::
+
+            The input shapes of the new x and y values must be correct
+            otherwise errors will be thrown.
+
+        Parameters
+        ----------
+        new_x : array_like
+            The new input data.
+        new_y : array_like
+            The new target data.
+        """
+
+        new_x = self.transform_x(new_x)
+        new_y = self.transform_y(new_y)
+        self._model = self._model.condition_on_observations(new_x, new_y)
 
 
-def get_gp(
-    *,
-    train_x,
-    train_y,
-    gp_type,
-    likelihood=None,
-    mean_module=DEFAULT_MEAN_MODULE,
-    covar_module=DEFAULT_COVAR_MODULE,
-    device=DEVICE,
-    **kwargs,
-):
-    """Returns the appropriate botorch GP model depending on the type of
-    gp (regression or classification).
-
-    Parameters
-    ----------
-    train_x : array_like
-        The inputs.
-    train_y : array_like
-        The targets. Note that for classification, these should be one-hot
-        encoded, e.g. np.array([0, 1, 2, 1, 2, 0, 0]).
-    gp_type : str
-        The type of GP to return, either "regression" or "classification".
-    likelihood : gpytorch.likelihoods, optional
-        Likelihood for initializing the GP. Recommended to keep the default:
-        ``gpytorch.likelihoods.GaussianLikelihood()`` for regression problems,
-        or to just leave as None by default. The function will automatically
-        choose the right likelihood depending on the type of calculation.
-    mean_module : gpytorch.means.Mean, optional
-        The mean function of the GP. See `here <https://docs.gpytorch.ai/en/
-        stable/means.html>`__ for more details.
-    covar_module : gpytorch.kernels, optional
-        Kernel used in the covariance function.
-    device : str, optional
-        The device to put the model on. Defaults to "cuda" if a GPU is
-        available, else "cpu".
-    **kwargs
-        Extra keyword arguments to pass to ``SingleTaskGP``.
-
-    Returns
-    -------
-    SingleTaskGP
-    """
-
-    gp_type = _gp_type_from_str(gp_type)
-
-    # Convert the provided (likely numpy) arrays to the appropriate torch
-    # tensors of the correct types
-    x = _to_float32_tensor(train_x, device=device)
-    if gp_type == "regression":
-        y = _to_float32_tensor(train_y, device=device)
-    else:
-        y = _to_long_tensor(train_y, device=device)
-
-    likelihood, y = _get_likelihood_and_y(gp_type, likelihood, y)
-
-    model = SingleTaskGP(
-        train_X=x,
-        train_Y=y,
-        likelihood=likelihood,
-        mean_module=mean_module,
-        covar_module=covar_module,
+class EasySingleTaskGPRegressor(EasyGP):
+    def __init__(
+        self,
+        *,
+        train_x,
+        train_y,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood(),
+        mean_module=gpytorch.means.ConstantMean(),
+        covar_module=gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel()
+        ),
+        device=DEVICE,
         **kwargs,
-    )
-
-    return deepcopy(model.to(device))
-
-
-def _detect_gp_type_from_model(gp_type, model):
-    if gp_type is None:
-        if isinstance(
-            model.likelihood,
-            gpytorch.likelihoods.DirichletClassificationLikelihood,
-        ):
-            logger.debug(
-                "DirichletClassificationLikelihood detected, assuming "
-                "classification problem"
-            )
-            return "classification"
-        logger.debug(
-            f"{model.likelihood.__class__.__name__} detected, "
-            "assuming regression problem"
+    ):
+        self._device = device
+        model = SingleTaskGP(
+            train_X=self.transform_x(train_x),
+            train_Y=self.transform_y(train_y),
+            likelihood=likelihood,
+            mean_module=mean_module,
+            covar_module=covar_module,
+            **kwargs,
         )
-        return "regression"
-
-    if gp_type not in ["regression", "classification"]:
-        raise ValueError(f"Unknown gp_type {gp_type}")
-    return gp_type
+        self._model = deepcopy(model.to(device))
 
 
-def train_gp_(
-    *,
-    model,
-    train_x=None,
-    train_y=None,
-    optimizer=torch.optim.Adam,
-    optimizer_kwargs={"lr": 0.1},
-    training_iter=100,
-    print_frequency=5,
-    device=DEVICE,
-    gp_type=None,
-):
-    """Trains the provided botorch model. The methods used here are different
-    than botorch's boilerplate ``fit_gpytorch_model``, and the function will
-    automatically try to detect what type of problem (regression or
-    classification) that is being performed if it's not specified explicitly.
-
-    Parameters
-    ----------
-    model : SingleTaskGP
-        The model to train.
-    train_x : array_like
-        The inputs. If None, defaults to the model.train_inputs.
-    train_y : array_like
-        The targets. Note that for classification, these should be one-hot
-        encoded, e.g. np.array([0, 1, 2, 1, 2, 0, 0]). If None, defaults to
-        model.train_targets.
-    optimizer : torch.optim, optional
-        The optimizer to use to train the GP.
-    optimizer_kwargs : dict, optional
-        Keyword arguments to pass to the optimizer.
-    training_iter : int, optional
-        The number of training iterations to perform.
-    print_frequency : int, optional
-        The frequency at which to log to the info logger during training. If
-        0 does not print anything during training.
-    device : str, optional
-        Device on which to perform the training.
-    gp_type : str, optional
-        The type of GP to train. See :class:`get_gp`. If None, attempts to
-        determine the type of GP from the model itself.
-    """
-
-    gp_type = _detect_gp_type_from_model(gp_type, model)
-
-    # Handle setting the training data in case it wasn't provided.
-    if train_x is None:
-        train_x = model.train_inputs[0]
-    else:
-        train_x = _to_float32_tensor(train_x, device=device)
-    if train_y is None:
-        train_y = model.train_targets
-    else:
-        if gp_type == "regression":
-            train_y = _to_float32_tensor(train_y, device=device)
-        else:
-            train_y = _to_long_tensor(train_y, device=device)
-
-    # Get all of the training objects together
-    model.train()
-    _optimizer = optimizer(model.parameters(), **optimizer_kwargs)
-
-    # Loss for GPs - the marginal log likelihood
-    mll = gpytorch.mlls.ExactMarginalLogLikelihood(
-        likelihood=model.likelihood, model=model
-    )
-    mll.to(train_x)
-
-    # Standard training loop...
-    losses = []
-    for ii in range(training_iter + 1):
-
-        _optimizer.zero_grad()
-        output = model(train_x)
-
-        loss = -mll(output, train_y).sum()
-        loss.backward()
-        _loss = loss.item()
-        ls = model.covar_module.base_kernel.lengthscale.mean().item()
-        noise = model.likelihood.noise.mean().item()
-        msg = (
-            f"{ii}/{training_iter} loss={_loss:.03f} lengthscale="
-            f"{ls:.03f} noise={noise:.03f}"
+class EasyFixedNoiseGPRegressor(EasyGP):
+    def __init__(
+        self,
+        *,
+        train_x,
+        train_y,
+        train_yvar,
+        mean_module=gpytorch.means.ConstantMean(),
+        covar_module=gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel()
+        ),
+        device=DEVICE,
+        **kwargs,
+    ):
+        self._device = device
+        model = FixedNoiseGP(
+            train_X=self.transform_x(train_x),
+            train_Y=self.transform_y(train_y),
+            train_Yvar=self.transform_y(train_yvar),
+            mean_module=mean_module,
+            covar_module=covar_module,
+            **kwargs,
         )
-        if print_frequency != 0:
-            if ii % (training_iter // print_frequency) == 0:
-                logger.info(msg)
-        logger.debug(msg)
-
-        _optimizer.step()
-        losses.append(loss.item())
-
-    return losses
+        self._model = deepcopy(model.to(device))
 
 
-def infer(*, model, grid, parsed=True, use_likelihood=True, device=DEVICE):
-    """Summary
+class MostLikelyHeteroskedasticGPRegressor(EasyGP):
+    def __init__(
+        self,
+        *,
+        train_x,
+        train_y,
+        likelihood=gpytorch.likelihoods.GaussianLikelihood(),
+        mean_module=gpytorch.means.ConstantMean(),
+        covar_module=gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel()
+        ),
+        device=DEVICE,
+        **kwargs,
+    ):
+        self._device = device
 
-    Parameters
-    ----------
-    model : gpytorch.model
-        The model on which to perform inference.
-    grid : array_like
-        The grid on which to perform inference.
-    parsed : bool, optional
-        If True, returns a dictionary with the keys "mean",
-        "mean-2sigma" and "mean+2sigma", representing the mean prediction of
-        the posterior, as well as the mean +/- 2sigma, in addition to the
-        ``gpytorch.distributions.MultivariateNormal`` object. If False, returns
-        the full ``gpytorch.distributions.MultivariateNormal`` only.
-    use_likelihood : bool, optional
-        If True, applies the likelihood forward operation to the model forward
-        operation. This is the recommended default behavior. Otherwise, just
-        uses the model forward behavior without accounting for the likelihood.
+        # Define the standard single task GP model
+        model = SingleTaskGP(
+            train_X=self.transform_x(train_x),
+            train_Y=self.transform_y(train_y),
+            likelihood=likelihood,
+            mean_module=mean_module,
+            covar_module=covar_module,
+            **kwargs,
+        )
+        model.likelihood.noise_covar.register_constraint(
+            "raw_noise", GreaterThan(1e-3)
+        )
+        self._model = deepcopy(model.to(device))
 
-    Returns
-    -------
-    dict or gpytorch.distributions.MultivariateNormal
-    """
+        # Define a noise model - this is going to be initialized during
+        # training
+        self._noise_model = None
 
-    grid = _to_float32_tensor(grid, device=device)
+    def train_(
+        self,
+        *,
+        optimizer=torch.optim.Adam,
+        optimizer_kwargs={"lr": 0.1},
+        training_iter=100,
+        print_frequency=5,
+    ):
 
-    model.eval()
+        # homoskedastic_loss = self._fit_model_(
+        #     model=self.model,
+        #     optimizer=optimizer,
+        #     optimizer_kwargs=optimizer_kwargs,
+        #     training_iter=training_iter,
+        #     print_frequency=print_frequency,
+        #     heteroskedastic_training=False
+        # )
 
-    with torch.no_grad(), gpytorch.settings.fast_pred_var():
-        if use_likelihood:
-            observed_pred = model.likelihood(model(grid))
-        else:
-            observed_pred = model(grid)
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+            likelihood=self.model.likelihood, model=self.model
+        )
+        botorch.fit.fit_gpytorch_model(mll)
 
-    if parsed:
-        lower, upper = observed_pred.confidence_region()
-        return {
-            "mean": observed_pred.mean.detach().numpy(),
-            "mean-2sigma": lower.detach().numpy(),
-            "mean+2sigma": upper.detach().numpy(),
-            "observed_pred": observed_pred,
-        }
-    return observed_pred
+        # Now we have to fit the noise model; first we get the observed
+        # variance
+        self.model.eval()
+        c_train_x = self._get_current_train_x()
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            post = self.model.posterior(c_train_x).mean.numpy()
+        observed_var = torch.tensor(
+            (post - self.train_y) ** 2, dtype=torch.float
+        )
 
+        # Now actually fit the noise model
+        self._noise_model = HeteroskedasticSingleTaskGP(
+            train_X=self._get_current_train_x(),
+            train_Y=self._get_current_train_y(),
+            train_Yvar=observed_var,
+        )
+        # heteroskedastic_loss = self._fit_model_(
+        #     model=self._noise_model,
+        #     optimizer=optimizer,
+        #     optimizer_kwargs=optimizer_kwargs,
+        #     training_iter=training_iter,
+        #     print_frequency=print_frequency,
+        #     heteroskedastic_training=True
+        # )
 
-def sample(*, model, grid, samples=10, seed=None, device=DEVICE):
-    """Samples from the provided model.
+        mll2 = gpytorch.mlls.ExactMarginalLogLikelihood(
+            likelihood=self._noise_model.likelihood, model=self._noise_model
+        )
+        botorch.fit.fit_gpytorch_model(mll2, max_retries=10)
 
-    Parameters
-    ----------
-    model : gpytorch.model
-        The model from which to sample. Must follow the GPyTorch API style:
+        self.model.train()
 
-        .. code-block:: python
-
-            model(grid).sample(...)
-
-    grid : array_like
-        The grid from which to sample.
-    samples : int, optional
-        Number of samples to draw.
-    seed : None, optional
-        Seeds the random number generator via ``torch.manual_seed``.
-
-    Returns
-    -------
-    numpy.array
-        The array of sampled data, of shape ``samples x len(grid)``.
-    """
-
-    if seed is not None:
-        torch.manual_seed(seed)
-    grid = _to_float32_tensor(grid, device=device)
-    return model(grid).sample(sample_shape=torch.Size([samples])).numpy()
-
-
-def sample_reproducibly(*, model, grid, seed, device=DEVICE):
-    """Summary
-
-    Parameters
-    ----------
-    model : TYPE
-        Description
-    grid : TYPE
-        Description
-    seed : TYPE
-        Description
-    device : TYPE, optional
-        Description
-    """
-
-    grid = _to_float32_tensor(grid, device=device)
-    return np.array(
-        [
-            sample(
-                model=model,
-                grid=np.array([xx]),
-                samples=1,
-                seed=seed,
-                device=device,
-            )
-            for xx in grid
-        ]
-    ).squeeze()
+        # return heteroskedastic_loss
 
 
-def get_training_data(*, model):
-    """Helper function for the user: easily extracts the training features and
-    targets from the model.
+class EasySingleTaskGPClassifier(EasyGP):
+    def transform_y(self, y):
+        """Executes a forward transformation of some sort on the output data.
+        For the classifier, this is a conversion to a long tensor.
 
-    Parameters
-    ----------
-    model : gpytorch.model
+        Parameters
+        ----------
+        y : array_like
 
-    Returns
-    -------
-    tuple
-        Two numpy arrays, one for the training inputs, one for the training
-        targets.
-    """
+        Returns
+        -------
+        torch.tensor
+        """
 
-    return (
-        model.train_inputs[0].detach().numpy(),
-        model.train_targets.detach().numpy(),
-    )
+        return _to_long_tensor(y, device=self.device)
 
-
-def tell(
-    *,
-    model,
-    new_x,
-    new_y,
-    gp_type=None,
-    device=None,
-):
-    """Returns a new model with updated data. This implicitly conditions the
-    model on the new data but without modifying the previous model's
-    hyperparameters.
-
-    .. warning::
-
-         The input shapes of the new x and y values must be correct otherwise
-         errors will be thrown.
-
-    Parameters
-    ----------
-    model : gpytorch.model
-    new_x : array_like
-        The new input data.
-    new_y : array_like
-        The new target data.
-    device : None, optional
-        Default or provided device.
-
-    Returns
-    -------
-    botorch.models.Model
-        A new model conditioned on the previous + new observations.
-    """
-
-    gp_type = _detect_gp_type_from_model(gp_type, model)
-    new_x = _to_float32_tensor(new_x, device=device)
-    if gp_type == "regression":
-        new_y = _to_float32_tensor(new_y, device=device)
-    else:
-        new_y = _to_long_tensor(new_y, device=device)
-    return model.condition_on_observations(new_x, new_y)
+    def __init__(
+        self,
+        *,
+        train_x,
+        train_y,
+        mean_module=gpytorch.means.ConstantMean(),
+        covar_module=gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel()
+        ),
+        device=DEVICE,
+        **kwargs,
+    ):
+        self._device = device
+        y = self.transform_y(train_y)
+        lh = gpytorch.likelihoods.DirichletClassificationLikelihood(
+            y, learn_additional_noise=True
+        )
+        model = SingleTaskGP(
+            train_X=self.transform_x(train_x),
+            train_Y=y,
+            likelihood=lh,
+            mean_module=mean_module,
+            covar_module=covar_module,
+            **kwargs,
+        )
+        self._model = deepcopy(model.to(device))
