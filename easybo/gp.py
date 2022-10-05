@@ -201,6 +201,16 @@ class EasyGP:
         s2 = self._model.train_targets.shape
         logger.debug(f"SAVED TRAIN OUTPUTS SHAPE: {s2}")
 
+    def _get_posterior(self, grid):
+
+        self._model.eval()
+        self._model.likelihood.eval()
+
+        grid = _to_float32_tensor(grid, device=self.device)
+
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            return self._model.posterior(grid)
+
     def predict(self, *, grid):
         """Runs inference on the model in eval mode.
 
@@ -218,26 +228,19 @@ class EasyGP:
             ``grid``, plus 2 x one standard deviation.
             - ``"mean-2sigma"``: the mean of the posterior on the provided
             ``grid``, minus 2 x one standard deviation.
-            - ``"observed_pred"``: the result of calling the model posterior
+            - ``"posterior"``: the result of calling the model posterior
             on the grid, can be used for further debugging/inference.
         """
 
-        self._model.eval()
-        self._model.likelihood.eval()
-
-        grid = _to_float32_tensor(grid, device=self.device)
-
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            observed_pred = self._model.posterior(grid)
-
-        mean = observed_pred.mean.detach().numpy().squeeze()
-        std = np.sqrt(observed_pred.variance.detach().numpy().squeeze())
+        posterior = self._get_posterior(grid)
+        mean = posterior.mean.detach().numpy().squeeze()
+        std = np.sqrt(posterior.variance.detach().numpy().squeeze())
 
         return {
             "mean": mean,
             "mean+2sigma": mean + 2.0 * std,
             "mean-2sigma": mean - 2.0 * std,
-            "observed_pred": observed_pred,
+            "posterior": posterior,
         }
 
     def sample(self, *, grid, samples=10, seed=None):
@@ -258,14 +261,9 @@ class EasyGP:
             The array of sampled data, of shape ``samples x len(grid)``.
         """
 
-        self._model.eval()
-        self._model.likelihood.eval()
-
-        if seed is not None:
-            torch.manual_seed(seed)
-        grid = _to_float32_tensor(grid, device=self.device)
-        result = self._model(grid).sample(sample_shape=torch.Size([samples]))
-        return result.detach().numpy()
+        posterior = self._get_posterior(grid)
+        sampled = posterior.sample(torch.Size([samples]))
+        return sampled.detach().numpy().reshape(samples, len(grid))
 
     def _condition(self, new_x, new_y):
 
@@ -347,17 +345,17 @@ class EasyGP:
         # github.com/pytorch/botorch/issues/1435#issuecomment-1265803038
         return self._condition(new_x, new_y)
 
-    def fantasize(self, sampler=SobolQMCNormalSampler(1), **kwargs):
+    def fantasize(self, sampler=SobolQMCNormalSampler(16), **kwargs):
         """Summary"""
 
-        x = self._get_current_train_x()
+        x = self._get_current_train_x(untransform=True)
         with fantasize_flag(), settings.propagate_grads(False):
             posterior = self._model.posterior(
                 x, observation_noise=True, **kwargs
             )
             y_fantasy = sampler(posterior)
-        print(x)
-        print(y_fantasy)
+
+        return x, y_fantasy
 
 
 class EasySingleTaskGPRegressor(EasyGP):
