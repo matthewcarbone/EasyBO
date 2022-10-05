@@ -243,7 +243,7 @@ class EasyGP:
             "posterior": posterior,
         }
 
-    def sample(self, *, grid, samples=10, seed=None):
+    def sample(self, *, grid, samples=1, seed=None):
         """Samples from the provided model.
 
         Parameters
@@ -288,16 +288,29 @@ class EasyGP:
         # Initialize...
         new_model = self.__class__(**kwargs)
 
+        # Old way -------------------------------------------------------------
         # # Condition the model with the right length scales but the WRONG
         # # information about the transform
-        new_model._model.load_state_dict(state_dict)
+        # new_model._model.load_state_dict(state_dict)
 
         # Retrain to get the right transform information
-        new_model.train_()
+        # new_model.train_()
+        # ---------------------------------------------------------------------
+
+        # New way
+        # github.com/pytorch/botorch/issues/1435#issuecomment-1268851771
+        new_state_dict = {
+            key: value
+            for key, value in state_dict.items()
+            if "outcome_transform" not in key and "input_transform" not in key
+        }
+
+        # `strict` needed since the state dict is now missing certain keys.
+        new_model._model.load_state_dict(new_state_dict, strict=False)
 
         return new_model
 
-    def tell(self, *, new_x, new_y):
+    def tell(self, *, new_x, new_y, retrain=True):
         """Informs the GP about new data. This implicitly conditions the model
         on the new data but without modifying the previous model's
         hyperparameters.
@@ -316,6 +329,8 @@ class EasyGP:
             The new input data.
         new_y : array_like
             The new target data.
+        retrain : bool, optional
+            If True, will automatically retrain via the ``train_`` method.
 
         Returns
         -------
@@ -343,7 +358,12 @@ class EasyGP:
 
         # For why we do it this way, see:
         # github.com/pytorch/botorch/issues/1435#issuecomment-1265803038
-        return self._condition(new_x, new_y)
+        new_model = self._condition(new_x, new_y)
+
+        if retrain:
+            new_model.train_()
+
+        return new_model
 
     def fantasize(self, sampler=SobolQMCNormalSampler(16), **kwargs):
         """Summary"""
