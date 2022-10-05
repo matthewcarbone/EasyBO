@@ -8,14 +8,12 @@ abstract away that difficulty (and others) by default.
 """
 
 from copy import deepcopy
+from itertools import product
 
-from botorch import settings
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
-from botorch.models.utils import fantasize as fantasize_flag
-from botorch.sampling.samplers import SobolQMCNormalSampler
 import gpytorch
 import numpy as np
 import torch
@@ -261,6 +259,8 @@ class EasyGP:
             The array of sampled data, of shape ``samples x len(grid)``.
         """
 
+        if seed is not None:
+            torch.manual_seed(seed)
         posterior = self._get_posterior(grid)
         sampled = posterior.sample(torch.Size([samples]))
         return sampled.detach().numpy().reshape(samples, len(grid))
@@ -365,17 +365,55 @@ class EasyGP:
 
         return new_model
 
-    def fantasize(self, sampler=SobolQMCNormalSampler(16), **kwargs):
-        """Summary"""
+    def dream(self, points_per_dimension=10, seed=123, **kwargs):
+        """This is a simliar method to BoTorch's fantasize, but it's a bit
+        simpler and is used for a specific purpose. This method returns a new
+        instance of the :class:`EasyGP` (or its derived classes) which is
+        constructed using a specific sample of the current model. The sample
+        is dictated by the provided seed, and the new training data is
+        determined by the minimum and maximum of the training data on each
+        dimension, and ``points_per_dimension`` are used to construct a
+        uniform grid. We call this method ``dream`` to differentiate it from
+        ``fantasize``.
 
-        x = self._get_current_train_x(untransform=True)
-        with fantasize_flag(), settings.propagate_grads(False):
-            posterior = self._model.posterior(
-                x, observation_noise=True, **kwargs
-            )
-            y_fantasy = sampler(posterior)
+        Parameters
+        ----------
+        points_per_dimension : int, optional
+            The number of points per dimension to use for training the dreamy
+            model.
+        seed : int, optional
+            The seed used during sample.
+        **kwargs
+            Keyword arguments for the training procedure.
 
-        return x, y_fantasy
+        Returns
+        -------
+        EasyGP
+        """
+
+        # train_x is of shape N x dims
+        # train_x.t is of shape dims x N
+        grids = [
+            np.linspace(xx.min(), xx.max(), points_per_dimension)
+            for xx in self.train_x.T
+        ]
+        coordinates = np.array([xx for xx in product(*grids)])
+
+        logger.debug(f"dreamed coordinates shape: {coordinates.shape}")
+
+        y = self.sample(grid=coordinates, samples=1, seed=seed).reshape(
+            -1, self.train_y.shape[1]
+        )
+
+        kwargs = deepcopy(self._initial_kwargs)
+        kwargs["train_x"] = coordinates
+        kwargs["train_y"] = y
+
+        # Initialize and train...
+        new_model = self.__class__(**kwargs)
+        new_model.train_(**kwargs)
+
+        return new_model
 
 
 class EasySingleTaskGPRegressor(EasyGP):
