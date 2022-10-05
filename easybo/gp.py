@@ -9,17 +9,11 @@ abstract away that difficulty (and others) by default.
 
 from copy import deepcopy
 
-import botorch
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
-from botorch.models import (
-    SingleTaskGP,
-    FixedNoiseGP,
-    HeteroskedasticSingleTaskGP,
-)
+from botorch.models import SingleTaskGP
 import gpytorch
-from gpytorch.constraints import GreaterThan
 import numpy as np
 import torch
 
@@ -129,7 +123,7 @@ class EasyGP:
 
         x = self._get_current_train_x()
         if hasattr(self._model, "input_transform"):
-            x = self._model.outcome_transform.untransform(x)
+            x = self._model.input_transform.untransform(x)
         return x.detach().numpy()
 
     def _get_current_train_y(self):
@@ -149,60 +143,8 @@ class EasyGP:
 
         y = self._get_current_train_y()
         if hasattr(self._model, "outcome_transform"):
-            y = self._model.outcome_transform.untransform(y)
+            y, _ = self._model.outcome_transform.untransform(y)
         return y.detach().numpy()
-
-    # def _fit_model_(
-    #     self,
-    #     *,
-    #     model,
-    #     optimizer,
-    #     optimizer_kwargs,
-    #     training_iter,
-    #     print_frequency,
-    #     heteroskedastic_training=False,
-    # ):
-
-    #     model.train()
-    #     _optimizer = optimizer(model.parameters(), **optimizer_kwargs)
-    #     mll = gpytorch.mlls.ExactMarginalLogLikelihood(
-    #         likelihood=model.likelihood, model=model
-    #     )
-    #     train_x = self._get_current_train_x()
-    #     train_y = self._get_current_train_y()
-    #     mll.to(train_x)
-
-    #     # Standard training loop...
-    #     losses = []
-    #     for ii in range(training_iter + 1):
-
-    #         _optimizer.zero_grad()
-    #         output = model(train_x)
-
-    #         if heteroskedastic_training:
-    #             loss = -mll(output, train_y, train_x).sum()
-    #         else:
-    #             loss = -mll(output, train_y).sum()
-    #         loss.backward()
-    #         _loss = loss.item()
-    #         ls = model.covar_module.base_kernel.lengthscale.mean().item()
-    #         try:
-    #             noise = model.likelihood.noise.mean().item()
-    #         except AttributeError:
-    #             noise = 0.0
-    #         msg = (
-    #             f"{ii}/{training_iter} loss={_loss:.03f} lengthscale="
-    #             f"{ls:.03f} noise={noise:.03f}"
-    #         )
-    #         if print_frequency != 0:
-    #             if ii % (training_iter // print_frequency) == 0:
-    #                 logger.info(msg)
-    #         logger.debug(msg)
-
-    #         _optimizer.step()
-    #         losses.append(loss.item())
-
-    #     return losses, mll
 
     def _log_training_debug_information(self):
         parameters = [param for param in self._model.named_parameters()]
@@ -233,19 +175,10 @@ class EasyGP:
 
         logger.debug("Parameter information before training:")
         self._log_training_debug_information()
-        print(self._model.train_inputs[0].shape)
-        print(self._model.train_targets.shape)
-
-        print(self._model.train_inputs[0].shape)
-        print(self._model.train_targets.shape)
 
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(
             likelihood=self._model.likelihood, model=self._model
         )
-        print(self._model.train_inputs[0].shape)
-        print(self._model.train_targets.shape)
-        print(mll.model.train_inputs[0].shape)
-        print(mll.model.train_targets.shape)
 
         fit_gpytorch_mll(
             mll,
@@ -262,15 +195,6 @@ class EasyGP:
 
         s2 = self._model.train_targets.shape
         logger.debug(f"SAVED TRAIN OUTPUTS SHAPE: {s2}")
-
-        # return self._fit_model_(
-        #     model=self._model,
-        #     optimizer=optimizer,
-        #     optimizer_kwargs=optimizer_kwargs,
-        #     training_iter=training_iter,
-        #     print_frequency=print_frequency,
-        #     heteroskedastic_training=False,
-        # )
 
     def predict(self, *, grid):
         """Runs inference on the model in eval mode.
@@ -338,34 +262,18 @@ class EasyGP:
         result = self._model(grid).sample(sample_shape=torch.Size([samples]))
         return result.detach().numpy()
 
-    # def sample_reproducibly(self, *, grid, seed):
-    #     """TODO
+    def _condition(self, new_x, new_y):
+        x = torch.cat([self._get_current_train_x(), new_x], axis=0)
+        y = torch.cat([self._get_current_train_y(), new_y], axis=0)
+        state_dict = self._model.state_dict()
+        kwargs = deepcopy(self._initial_kwargs)
+        kwargs["train_x"] = x
+        kwargs["train_y"] = y
+        model = self.__class__(**kwargs)
+        model._model.load_state_dict(state_dict)
+        return model
 
-    #     Parameters
-    #     ----------
-    #     grid : TYPE
-    #         Description
-    #     seed : TYPE
-    #         Description
-
-    #     Returns
-    #     -------
-    #     TYPE
-    #         Description
-    #     """
-
-    #     return np.array(
-    #         [
-    #             self.sample(
-    #                 grid=np.array([xx]),
-    #                 samples=1,
-    #                 seed=seed,
-    #             )
-    #             for xx in grid
-    #         ]
-    #     ).squeeze()
-
-    def tell_(self, *, new_x, new_y):
+    def tell(self, *, new_x, new_y):
         """Informs the GP about new data. This implicitly conditions the model
         on the new data but without modifying the previous model's
         hyperparameters.
@@ -384,6 +292,10 @@ class EasyGP:
             The new input data.
         new_y : array_like
             The new target data.
+
+        Returns
+        -------
+        EasyGP
         """
 
         new_x = self.x_to_tensor(new_x)
@@ -395,9 +307,21 @@ class EasyGP:
         if hasattr(self._model, "outcome_transform"):
             new_y, __ = self._model.outcome_transform(new_y)
 
-        self._model = deepcopy(
-            self._model.condition_on_observations(new_x, new_y)
-        )
+        # try:
+        #     self._model = self._model.condition_on_observations(new_x, new_y)
+
+        # except RuntimeError as err:
+        #     logger.debug(
+        #         f"RuntimeError raised during conditioning: {err}. likely "
+        #         "no predictions were made before trying to get a fantasy "
+        #         "model: running predict to try and resolve"
+        #     )
+        #     self.predict(grid=self.train_x)
+        #     self._model = self._model.condition_on_observations(new_x, new_y)
+
+        # For why we do it this way, see:
+        # github.com/pytorch/botorch/issues/1435#issuecomment-1265803038
+        return self._condition(new_x, new_y)
 
 
 class EasySingleTaskGPRegressor(EasyGP):
@@ -416,6 +340,15 @@ class EasySingleTaskGPRegressor(EasyGP):
         device=DEVICE,
         **kwargs,
     ):
+        self._initial_kwargs = deepcopy(
+            {
+                key: value
+                for key, value in locals().items()
+                if key not in ["self", "kwargs"]
+            }
+        )
+        kwargs = deepcopy({key: value for key, value in kwargs.items()})
+        self._initial_kwargs = {**self._initial_kwargs, **kwargs}
         self._device = device
         d = train_x.shape[1]  # Number of features
         input_transform = (
