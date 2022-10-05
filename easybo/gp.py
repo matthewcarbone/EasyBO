@@ -9,10 +9,13 @@ abstract away that difficulty (and others) by default.
 
 from copy import deepcopy
 
+from botorch import settings
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
+from botorch.models.utils import fantasize as fantasize_flag
+from botorch.sampling.samplers import SobolQMCNormalSampler
 import gpytorch
 import numpy as np
 import torch
@@ -107,8 +110,11 @@ class EasyGP:
 
         return self._model
 
-    def _get_current_train_x(self):
-        return self._model.train_inputs[0]
+    def _get_current_train_x(self, untransform=False):
+        x = self._model.train_inputs[0]
+        if untransform and hasattr(self._model, "input_transform"):
+            x = self._model.input_transform.untransform(x)
+        return x
 
     @property
     def train_x(self):
@@ -121,13 +127,13 @@ class EasyGP:
         numpy.ndarray
         """
 
-        x = self._get_current_train_x()
-        if hasattr(self._model, "input_transform"):
-            x = self._model.input_transform.untransform(x)
-        return x.detach().numpy()
+        return self._get_current_train_x(untransform=True).detach().numpy()
 
-    def _get_current_train_y(self):
-        return self._model.train_targets.reshape(-1, 1)
+    def _get_current_train_y(self, untransform=False):
+        y = self._model.train_targets.reshape(-1, 1)
+        if untransform and hasattr(self._model, "outcome_transform"):
+            y, _ = self._model.outcome_transform.untransform(y)
+        return y
 
     @property
     def train_y(self):
@@ -141,21 +147,20 @@ class EasyGP:
         numpy.ndarray
         """
 
-        y = self._get_current_train_y()
-        if hasattr(self._model, "outcome_transform"):
-            y, _ = self._model.outcome_transform.untransform(y)
-        return y.detach().numpy()
+        return self._get_current_train_y(untransform=True).detach().numpy()
 
-    def _log_training_debug_information(self):
-        parameters = [param for param in self._model.named_parameters()]
+    def _log_training_debug_information(self, model=None):
+        if model is None:
+            model = self._model
+        parameters = [param for param in model.named_parameters()]
         logger.debug(f"MODEL PARAMETERS: {parameters}")
 
         # Ensure we include the proper transforms
-        if hasattr(self._model, "input_transform"):
-            p = self._model.input_transform._buffers
+        if hasattr(model, "input_transform"):
+            p = model.input_transform._buffers
             logger.debug(f"INPUT TRANSFORM: {p}")
-        if hasattr(self._model, "outcome_transform"):
-            p = self._model.outcome_transform._buffers
+        if hasattr(model, "outcome_transform"):
+            p = model.outcome_transform._buffers
             logger.debug(f"OUTCOME TRANSFORM: {p}")
 
     def train_(self, *, optimizer=None, optimizer_kwargs=None, **kwargs):
@@ -263,15 +268,36 @@ class EasyGP:
         return result.detach().numpy()
 
     def _condition(self, new_x, new_y):
-        x = torch.cat([self._get_current_train_x(), new_x], axis=0)
-        y = torch.cat([self._get_current_train_y(), new_y], axis=0)
+
+        # Concatenate all of the untransformed data together
+        x = self._get_current_train_x(untransform=True)
+        logger.debug(f"old_x min max: {x.min()} {x.max()}")
+        x = torch.cat([x, new_x], axis=0)
+        y = self._get_current_train_y(untransform=True)
+        logger.debug(f"old_y min max: {y.min()} {y.max()}")
+        y = torch.cat([y, new_y], axis=0)
+
+        # Get the model's state dict. This contains all of the state
+        # information, including the parameters of the transforms
         state_dict = self._model.state_dict()
+
+        # Get the keyword arguments that were initially used to construct
+        # the model, but override with the new training data
         kwargs = deepcopy(self._initial_kwargs)
         kwargs["train_x"] = x
         kwargs["train_y"] = y
-        model = self.__class__(**kwargs)
-        model._model.load_state_dict(state_dict)
-        return model
+
+        # Initialize...
+        new_model = self.__class__(**kwargs)
+
+        # # Condition the model with the right length scales but the WRONG
+        # # information about the transform
+        new_model._model.load_state_dict(state_dict)
+
+        # Retrain to get the right transform information
+        new_model.train_()
+
+        return new_model
 
     def tell(self, *, new_x, new_y):
         """Informs the GP about new data. This implicitly conditions the model
@@ -298,14 +324,12 @@ class EasyGP:
         EasyGP
         """
 
+        # The new data will be "untransformed"
         new_x = self.x_to_tensor(new_x)
         new_y = self.y_to_tensor(new_y)
 
-        # Ensure we include the proper transforms
-        if hasattr(self._model, "input_transform"):
-            new_x = self._model.input_transform(new_x)
-        if hasattr(self._model, "outcome_transform"):
-            new_y, __ = self._model.outcome_transform(new_y)
+        logger.debug(f"new_x min max {new_x.min()} {new_x.max()}")
+        logger.debug(f"new_y min max {new_y.min()} {new_y.max()}")
 
         # try:
         #     self._model = self._model.condition_on_observations(new_x, new_y)
@@ -322,6 +346,18 @@ class EasyGP:
         # For why we do it this way, see:
         # github.com/pytorch/botorch/issues/1435#issuecomment-1265803038
         return self._condition(new_x, new_y)
+
+    def fantasize(self, sampler=SobolQMCNormalSampler(1), **kwargs):
+        """Summary"""
+
+        x = self._get_current_train_x()
+        with fantasize_flag(), settings.propagate_grads(False):
+            posterior = self._model.posterior(
+                x, observation_noise=True, **kwargs
+            )
+            y_fantasy = sampler(posterior)
+        print(x)
+        print(y_fantasy)
 
 
 class EasySingleTaskGPRegressor(EasyGP):
