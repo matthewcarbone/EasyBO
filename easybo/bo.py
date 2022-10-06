@@ -7,13 +7,16 @@ from botorch.utils.transforms import (
     t_batch_mode_transform,
     concatenate_pending_points,
 )
+
+# from itertools import product
+# from monty.json import MSONable
 import torch
 
 from easybo.utils import _to_float32_tensor, DEVICE
 from easybo.logger import logger
 
 
-def acquisition_function_factory(cls):
+def _acquisition_function_factory_weights(cls):
     """Intended as a decorator for adding a ``custom_weight`` attribute to the
     provided class type. The user can set ``custom_weight`` as a function of
     the grid coordinate, which can allow one to weight the resultant
@@ -137,7 +140,7 @@ def ask(
     acquisition_function=UpperConfidenceBound,
     X_pending=None,
     fixed_features=None,
-    acquisition_function_kwargs=dict(),
+    acquisition_function_kwargs=dict(beta=0.1),
     optimize_acqf_kwargs={
         "q": 1,
         "num_restarts": 5,
@@ -186,7 +189,7 @@ def ask(
     Returns
     -------
     numpy.ndarray
-        The next points to sample.
+        The next point(s) to sample.
 
     Raises
     ------
@@ -234,14 +237,17 @@ def ask(
     )
 
     # Add custom_weight method
-    acquisition_function = acquisition_function_factory(acquisition_function)
+    if weight is not None:
+        acquisition_function = _acquisition_function_factory_weights(
+            acquisition_function
+        )
+        acquisition_function_kwargs["custom_weight"] = weight
 
     if X_pending is not None:
         X_pending = _to_float32_tensor(X_pending, device=device)
 
     aq = acquisition_function(
         model,
-        custom_weight=weight,
         X_pending=X_pending,
         **acquisition_function_kwargs,
     )
@@ -257,18 +263,55 @@ def ask(
     return candidate
 
 
-def run_simulated_campaign(*, model, acquisition_functions, samples=10):
-    """Summary
+# class SimulatedCampaign(MSONable):
+#     """Runs a simulated Bayesian Optimization campaign."""
 
-    Parameters
-    ----------
-    model : SingleTaskGP
-        This is th emodel which has already been conditioned on some starting
-        data and will be used in the campaign.
-    acquisition_functions : list
-        A list of acquisition function names
-    samples : int, optional
-        Description
-    """
+#     def __init__(
+#         self,
+#         *,
+#         objective=lambda x: x,
+#         bounds=[[0, 1]],
+#         optimize_acqf_kwargs={
+#             "q": 1,
+#             "num_restarts": 5,
+#             "raw_samples": 20,
+#         },
+#         weight=None,
+#         device=DEVICE,
+#         report=dict(),
+#     ):
+#         self._objective = objective
+#         self._bounds = bounds
+#         self._optimize_acqf_kwargs = optimize_acqf_kwargs
+#         self._weight = weight
+#         self._device = device
+#         self._report = report
 
-    ...
+#     def run_single(
+#         self,
+#         *,
+#         model,
+#         acquisition_function,
+#         acquisition_function_parameters,
+#         iterations_per_dream=10,
+#         total_dreams=10,
+#     ):
+#         keys, values = zip(*acquisition_function_parameters.items())
+#         params = [dict(zip(keys, v)) for v in product(*values)]
+
+
+# def run_simulated_campaign(*, model, acquisition_functions, samples=10):
+#     """Summary
+
+#     Parameters
+#     ----------
+#     model : SingleTaskGP
+#         This is th emodel which has already been conditioned on some starting
+#         data and will be used in the campaign.
+#     acquisition_functions : list
+#         A list of acquisition function names
+#     samples : int, optional
+#         Description
+#     """
+
+#     ...
