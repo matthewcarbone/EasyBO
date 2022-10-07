@@ -236,6 +236,7 @@ class EasyGP:
 
         return {
             "mean": mean,
+            "std": std,
             "mean+2sigma": mean + 2.0 * std,
             "mean-2sigma": mean - 2.0 * std,
             "posterior": posterior,
