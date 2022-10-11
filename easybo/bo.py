@@ -14,6 +14,7 @@ import torch
 
 from easybo.utils import _to_float32_tensor, DEVICE
 from easybo.logger import logger
+from easybo.gp import EasyGP
 
 
 def _acquisition_function_factory_weights(cls):
@@ -141,11 +142,7 @@ def ask(
     X_pending=None,
     fixed_features=None,
     acquisition_function_kwargs=dict(beta=0.1),
-    optimize_acqf_kwargs={
-        "q": 1,
-        "num_restarts": 5,
-        "raw_samples": 20,
-    },
+    optimize_acqf_kwargs=dict(q=1, num_restarts=5, raw_samples=20),
     weight=None,
     device=DEVICE,
 ):
@@ -154,7 +151,7 @@ def ask(
 
     Parameters
     ----------
-    model : SingleTaskGP
+    model : EasyGP
         The trained/conditioned model used to produce the next point.
     bounds : list, optional
         A list of tuple where the first entry of each tuple is the start of the
@@ -201,6 +198,9 @@ def ask(
 
     bounds = torch.tensor(bounds).float().reshape(-1, 2).T
     logger.debug(f"ask bounds set to {bounds}")
+
+    if isinstance(model, EasyGP):
+        model = model.model
 
     # Instantiate assuming base of botorch.acquisition
     if isinstance(acquisition_function, str):

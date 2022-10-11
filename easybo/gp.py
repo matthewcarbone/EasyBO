@@ -125,6 +125,7 @@ class EasyGP:
         numpy.ndarray
         """
 
+        # github.com/pytorch/botorch/issues/1435#issuecomment-1274974582
         t = self._model.training
         return self._get_current_train_x(untransform=not t).detach().numpy()
 
@@ -271,10 +272,10 @@ class EasyGP:
 
         # Concatenate all of the untransformed data together
         x = self._get_current_train_x(untransform=True)
-        logger.debug(f"old_x min max: {x.min()} {x.max()}")
+        logger.debug(f"old_x min max: {x.min(axis=0)} {x.max(axis=0)}")
         x = torch.cat([x, new_x], axis=0)
         y = self._get_current_train_y(untransform=True)
-        logger.debug(f"old_y min max: {y.min()} {y.max()}")
+        logger.debug(f"old_y min max: {y.min(axis=0)} {y.max(axis=0)}")
         y = torch.cat([y, new_y], axis=0)
 
         # Get the model's state dict. This contains all of the state
@@ -307,7 +308,8 @@ class EasyGP:
             if "outcome_transform" not in key and "input_transform" not in key
         }
 
-        # `strict` needed since the state dict is now missing certain keys.
+        # `strict == False` needed since the state dict is now missing certain
+        # keys
         new_model._model.load_state_dict(new_state_dict, strict=False)
 
         return new_model
@@ -343,8 +345,8 @@ class EasyGP:
         new_x = self.x_to_tensor(new_x)
         new_y = self.y_to_tensor(new_y)
 
-        logger.debug(f"new_x min max {new_x.min()} {new_x.max()}")
-        logger.debug(f"new_y min max {new_y.min()} {new_y.max()}")
+        logger.debug(f"new_x min max {new_x.min(axis=0)} {new_x.max(axis=0)}")
+        logger.debug(f"new_y min max {new_y.min(axis=0)} {new_y.max(axis=0)}")
 
         # try:
         #     self._model = self._model.condition_on_observations(new_x, new_y)
@@ -427,7 +429,7 @@ class EasySingleTaskGPRegressor(EasyGP):
         likelihood=gpytorch.likelihoods.GaussianLikelihood(),
         mean_module=gpytorch.means.ConstantMean(),
         covar_module=gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel()
+            gpytorch.kernels.MaternKernel()
         ),
         normalize_inputs_to_unity=True,
         standardize_outputs=True,

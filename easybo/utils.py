@@ -31,6 +31,24 @@ def _to_long_tensor(x, device=DEVICE):
     return x
 
 
+def grids_to_coordinates(grids):
+    """Converts a list of ``N`` arrays to an ``N`` x len-of-any-array
+    dimensional coordinate array.
+
+    Parameters
+    ----------
+    grids : list
+        A list of array_like.
+
+    Returns
+    -------
+    numpy.ndarray
+    """
+
+    x = np.meshgrid(*grids)
+    return np.array([xx.flatten() for xx in x]).T
+
+
 def get_dummy_1d_sinusoidal_data(seed=123):
 
     np.random.seed(seed)
@@ -51,6 +69,43 @@ def get_dummy_1d_sinusoidal_data(seed=123):
     grid = torch.linspace(0, 2.5, 110).reshape(-1, 1)
 
     return grid, train_x, train_y
+
+
+def get_dummy_2d_data(seed=127, N=100, M=150):
+
+    np.random.seed(127)
+    idx = np.random.choice([xx for xx in range(N * M)], 20, replace=False)
+    idx.sort()
+
+    grid_x = np.linspace(-4, 5, N)
+    grid_y = np.linspace(-5, 4, M)
+
+    # Feature data
+    g1, g2 = np.meshgrid(grid_x, grid_y)
+    X = np.array([g1.flatten(), g2.flatten()]).T
+    X = X[idx, :]
+
+    def func(x, y):
+        return (1 - x / 3.0 + x**5 + y**5) * np.exp(
+            -(x**2) - y**2
+        ) + np.exp(-((x - 2) ** 2) - (y + 4) ** 2)
+
+    def truth(X):
+        x = X[:, 0]
+        y = X[:, 1]
+        return func(x, y)
+
+    def truth_meshgrid(x, y):
+        x = x.reshape(-1, 1)
+        y = y.reshape(1, -1)
+        return func(x, y)
+
+    y = truth(X)  # Target data
+    y = y.reshape(-1, 1)
+    train_x = X
+    train_y = y
+
+    return grid_x, grid_y, train_x, train_y, truth, truth_meshgrid
 
 
 def set_grids(
