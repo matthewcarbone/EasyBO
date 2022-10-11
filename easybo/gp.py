@@ -109,7 +109,7 @@ class EasyGP:
         return self._model
 
     def _get_current_train_x(self, untransform=False):
-        x = self._model.train_inputs[0]
+        x = deepcopy(self._model.train_inputs[0])
         if untransform and hasattr(self._model, "input_transform"):
             x = self._model.input_transform.untransform(x)
         return x
@@ -125,10 +125,11 @@ class EasyGP:
         numpy.ndarray
         """
 
-        return self._get_current_train_x(untransform=True).detach().numpy()
+        t = self._model.training
+        return self._get_current_train_x(untransform=not t).detach().numpy()
 
     def _get_current_train_y(self, untransform=False):
-        y = self._model.train_targets.reshape(-1, 1)
+        y = deepcopy(self._model.train_targets.reshape(-1, 1))
         if untransform and hasattr(self._model, "outcome_transform"):
             y, _ = self._model.outcome_transform.untransform(y)
         return y
