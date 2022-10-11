@@ -3,6 +3,8 @@ EasyBO
 
 .. inclusion-marker-easybo-begin
 
+**Warning: this work is still in pre-release and breaking changes wil be common!**
+
 **EasyBO** is a Python library designed to make Bayesian optimization and Gaussian Process modeling really `easy`! 
 
 Plenty of excellent codes already exist to perform Bayesian optimization and Gaussian Process surrogate modeling. For Gaussian Processes, these involve in no particular order, these include `scikit learn <https://scikit-learn.org/stable/modules/gaussian_process.html>`__, `GPyTorch <https://gpytorch.ai>`__, `GPCam <https://gpcam.readthedocs.io/en/latest/index.html>`__, and many others. There's even a `Wikipedia page <https://en.wikipedia.org/wiki/Comparison_of_Gaussian_process_software>`__ dedicated to documenting the different codes and their various strengths and weaknesses. In the space of Bayesian optimization there are e.g. `GPyOpt <https://sheffieldml.github.io/GPyOpt/>`__, `BoTorch <https://botorch.org>`__, and some others.
@@ -46,5 +48,14 @@ Funding acknowledgement
 .. inclusion-marker-easybo-funding-begin
 
 This material is based upon work supported by the U.S. Department of Energy, Office of Science at Brookhaven National Laboratory under Contract No. DE-SC0012704. This research is also supported by the BNL Laboratory Directed Research and Development Grant No. 22-059.
+
+Disclaimer
+^^^^^^^^^^
+
+The Software resulted from work developed under a U.S. Government Contract No. DE-SC0012704 and are subject to the following terms: the U.S. Government is granted for itself and others acting on its behalf a paid-up, nonexclusive, irrevocable worldwide license in this computer software and data to reproduce, prepare derivative works, and perform publicly and display publicly.
+
+THE SOFTWARE IS SUPPLIED "AS IS" WITHOUT WARRANTY OF ANY KIND. THE UNITED STATES, THE UNITED STATES DEPARTMENT OF ENERGY, AND THEIR EMPLOYEES: (1) DISCLAIM ANY WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE OR NON-INFRINGEMENT, (2) DO NOT ASSUME ANY LEGAL LIABILITY OR RESPONSIBILITY FOR THE ACCURACY, COMPLETENESS, OR USEFULNESS OF THE SOFTWARE, (3) DO NOT REPRESENT THAT USE OF THE SOFTWARE WOULD NOT INFRINGE PRIVATELY OWNED RIGHTS, (4) DO NOT WARRANT THAT THE SOFTWARE WILL FUNCTION UNINTERRUPTED, THAT IT IS ERROR-FREE OR THAT ANY ERRORS WILL BE CORRECTED.
+
+IN NO EVENT SHALL THE UNITED STATES, THE UNITED STATES DEPARTMENT OF ENERGY, OR THEIR EMPLOYEES BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL OR PUNITIVE DAMAGES OF ANY KIND OR NATURE RESULTING FROM EXERCISE OF THIS LICENSE AGREEMENT OR THE USE OF THE SOFTWARE.
 
 .. inclusion-marker-easybo-funding-end
