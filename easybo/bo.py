@@ -13,7 +13,7 @@ from botorch.utils.transforms import (
 import torch
 
 from easybo.utils import _to_float32_tensor, DEVICE
-from easybo.logger import logger
+from easybo.logger import logger, _log_warnings
 from easybo.gp import EasyGP
 
 
@@ -134,6 +134,7 @@ class _qMaxVariance(MCAcquisitionFunction):
         return ucb_samples.max(dim=-1)[0].mean(dim=0)
 
 
+@_log_warnings
 def ask(
     *,
     model,

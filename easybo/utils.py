@@ -174,7 +174,7 @@ def plot_1d_fit(
     ax.plot(grid.squeeze(), preds["mean"].squeeze(), **plot_kwargs)
     ax.fill_between(
         grid.squeeze(),
-        preds["mean-2sigma"].squeeze(),
-        preds["mean+2sigma"].squeeze(),
+        preds["mean-2std"].squeeze(),
+        preds["mean+2std"].squeeze(),
         **fill_between_kwargs
     )

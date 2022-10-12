@@ -10,6 +10,7 @@ abstract away that difficulty (and others) by default.
 from copy import deepcopy
 from itertools import product
 
+from botorch.exceptions.errors import ModelFittingError
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
@@ -19,12 +20,26 @@ import numpy as np
 import torch
 
 from easybo.utils import _to_float32_tensor, DEVICE
-from easybo.logger import logger
+from easybo.logger import logger, _log_warnings
+
+
+TRAINING_WARN_MESSAGE = (
+    "Last training attempt failed: you are predicting on a model "
+    "that might not be conditioned correctly on the data you "
+    "provided to it."
+)
 
 
 class EasyGP:
     """Core base class for defining all the primary operations required for an
     "easy Gaussian Process"."""
+
+    def __init__(self):
+        self._training_state_successful = True
+
+    @property
+    def training_state_successful(self):
+        return self._training_state_successful
 
     def x_to_tensor(self, x):
         """Executes a forward transformation of some sort on the input data.
@@ -152,18 +167,28 @@ class EasyGP:
     def _log_training_debug_information(self, model=None):
         if model is None:
             model = self._model
-        parameters = [param for param in model.named_parameters()]
-        logger.debug(f"MODEL PARAMETERS: {parameters}")
+
+        for p in model.named_parameters():
+            p0 = p[0]
+            p1 = str(p[1]).split("\n")[1]
+            logger.debug(f"{p0}: {p1}")
 
         # Ensure we include the proper transforms
         if hasattr(model, "input_transform"):
-            p = model.input_transform._buffers
-            logger.debug(f"INPUT TRANSFORM: {p}")
+            logger.debug(f"INP TRANSFORM: {model.input_transform._buffers}")
         if hasattr(model, "outcome_transform"):
-            p = model.outcome_transform._buffers
-            logger.debug(f"OUTCOME TRANSFORM: {p}")
+            logger.debug(f"OUT TRANSFORM: {model.outcome_transform._buffers}")
 
-    def train_(self, *, optimizer=None, optimizer_kwargs=None, **kwargs):
+    @_log_warnings
+    def train_(
+        self,
+        *,
+        optimizer=None,
+        optimizer_kwargs=None,
+        log_error_on_fail=False,
+        terminate_on_fail=False,
+        **kwargs,
+    ):
         """Trains model. This is a lightweight wrapper for ``botorch``'s
         ``fit_gpytorch_mll`` function. It simply initializes an
         exact marginal log likelihood and uses that to train the model.
@@ -178,28 +203,45 @@ class EasyGP:
             Extra keyword arguments to pass to ``fit_gpytorch_mll``.
         """
 
-        logger.debug("Parameter information before training:")
+        self._training_state_successful = True
+
+        logger.debug("------- PARAMETER INFO BEFORE TRAINING -------")
         self._log_training_debug_information()
 
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(
             likelihood=self._model.likelihood, model=self._model
         )
 
-        fit_gpytorch_mll(
-            mll,
-            optimizer=optimizer,
-            optimizer_kwargs=optimizer_kwargs,
-            **kwargs,
-        )
+        try:
+            fit_gpytorch_mll(
+                mll,
+                optimizer=optimizer,
+                optimizer_kwargs=optimizer_kwargs,
+                **kwargs,
+            )
 
-        logger.debug("Parameter information after training:")
+        except ModelFittingError:
+            self._training_state_successful = False
+            msg = (
+                "train_(...) failed to fit the model. Did you scale your "
+                "inputs/targets properly? Is your kernel choice too "
+                "strict?"
+            )
+
+            if log_error_on_fail:
+                logger.exception(msg)
+            else:
+                logger.warning(msg)
+
+            if terminate_on_fail:
+                if not log_error_on_fail:
+                    logger.exception(msg)
+
+                logger.critical("terminate_on_fail is true, throwing error")
+                raise ModelFittingError
+
+        logger.debug("------- PARAMETER INFO AFTER TRAINING -------")
         self._log_training_debug_information()
-
-        s1 = self._model.train_inputs[0].shape
-        logger.debug(f"SAVED TRAIN INPUTS SHAPE: {s1}")
-
-        s2 = self._model.train_targets.shape
-        logger.debug(f"SAVED TRAIN OUTPUTS SHAPE: {s2}")
 
     def _get_posterior(self, grid):
 
@@ -211,6 +253,7 @@ class EasyGP:
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             return self._model.posterior(grid)
 
+    @_log_warnings
     def predict(self, *, grid):
         """Runs inference on the model in eval mode.
 
@@ -236,14 +279,18 @@ class EasyGP:
         mean = posterior.mean.detach().numpy().squeeze()
         std = np.sqrt(posterior.variance.detach().numpy().squeeze())
 
+        if not self._training_state_successful:
+            logger.warning(TRAINING_WARN_MESSAGE)
+
         return {
             "mean": mean,
             "std": std,
-            "mean+2sigma": mean + 2.0 * std,
-            "mean-2sigma": mean - 2.0 * std,
+            "mean+2std": mean + 2.0 * std,
+            "mean-2std": mean - 2.0 * std,
             "posterior": posterior,
         }
 
+    @_log_warnings
     def sample(self, *, grid, samples=1, seed=None):
         """Samples from the provided model.
 
@@ -312,8 +359,12 @@ class EasyGP:
         # keys
         new_model._model.load_state_dict(new_state_dict, strict=False)
 
+        # Set any attributes that are not kwargs
+        new_model._training_state_successful = self._training_state_successful
+
         return new_model
 
+    @_log_warnings
     def tell(self, *, new_x, new_y, retrain=True):
         """Informs the GP about new data. This implicitly conditions the model
         on the new data but without modifying the previous model's
@@ -369,6 +420,7 @@ class EasyGP:
 
         return new_model
 
+    @_log_warnings
     def dream(self, points_per_dimension=10, seed=123, **kwargs):
         """This is a simliar method to BoTorch's fantasize, but it's a bit
         simpler and is used for a specific purpose. This method returns a new

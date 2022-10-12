@@ -1,24 +1,24 @@
 from contextlib import contextmanager
 import sys
-
-# from unittest.mock import MagicMock
+from warnings import catch_warnings
 
 from loguru import logger
 
 
 SIMPLE_LOGGER_FMT = (
     # "<fg #808080>"
-    "<fg #808080>{time:YYYY-MM-DD HH:mm:ss} "
-    "{name}:{function}:{line}</> "
-    "[<lvl>{level}</>] {message}"
+    # "<fg #808080>{time:YYYY-MM-DD HH:mm:ss} "
+    # "<fg #808080>{name}:{function}:{line}</> "
+    "<lvl>{level: <8}</> {message}"
     # "[<lvl>{level}</>] <lvl>{message}</>"
 )
 
 LOGGER_FMT = (
-    "<fg #808080>{time:YYYY-MM-DD HH:mm:ss} "
-    "{name}:{function}:{line}</> "
+    "<lvl>{level: <8}</> "
+    "<fg #808080>({time:YYYY-MM-DD HH:mm:ss} "
+    "{name}:{function}:{line})</> "
     # "|<lvl>{level: <10}</>| {message}"
-    "[<lvl>{level}</>] {message}"
+    "{message}"
 )
 
 
@@ -65,8 +65,22 @@ def set_logger_style(
         )
 
 
+def _log_warnings(f):
+    def wrapper(*args, **kwargs):
+        with catch_warnings(record=True) as w:
+            output = f(*args, **kwargs)
+        for warning in w:
+            klass = warning.category.__name__
+            message = str(warning.message)
+            v = vars(warning)
+            logger.warning(f"{klass}: {message} | {v}")
+        return output
+
+    return wrapper
+
+
 @contextmanager
-def mode(**kwargs):
+def logging_mode(**kwargs):
     set_logger_style(**kwargs)
     try:
         yield None
