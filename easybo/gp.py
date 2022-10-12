@@ -19,14 +19,19 @@ import gpytorch
 import numpy as np
 import torch
 
-from easybo.utils import _to_float32_tensor, DEVICE
+from easybo.utils import _to_float32_tensor, DEVICE, Timer
 from easybo.logger import logger, _log_warnings
 
 
-TRAINING_WARN_MESSAGE = (
-    "Last training attempt failed: you are predicting on a model "
-    "that might not be conditioned correctly on the data you "
-    "provided to it."
+_TRAINING_WARN_MESSAGE = (
+    "Last training attempt failed (or training was never performed): you are "
+    "predicting on a model that might not be conditioned correctly on the "
+    "data you provided to it."
+)
+
+_TRAINING_ERROR_MESSAGE = (
+    "train_(...) failed to fit the model. Did you scale your inputs/targets"
+    "properly? Is your kernel choice too strict?"
 )
 
 
@@ -35,10 +40,18 @@ class EasyGP:
     "easy Gaussian Process"."""
 
     def __init__(self):
-        self._training_state_successful = True
+        self._training_state_successful = False
 
     @property
     def training_state_successful(self):
+        """If True, then the last training instance of the model was
+        successful. Note that the default (before training) is False.
+
+        Returns
+        -------
+        bool
+        """
+
         return self._training_state_successful
 
     def x_to_tensor(self, x):
@@ -213,35 +226,34 @@ class EasyGP:
         )
 
         try:
-            fit_gpytorch_mll(
-                mll,
-                optimizer=optimizer,
-                optimizer_kwargs=optimizer_kwargs,
-                **kwargs,
-            )
+            with Timer() as timer:
+                fit_gpytorch_mll(
+                    mll,
+                    optimizer=optimizer,
+                    optimizer_kwargs=optimizer_kwargs,
+                    **kwargs,
+                )
 
         except ModelFittingError:
             self._training_state_successful = False
-            msg = (
-                "train_(...) failed to fit the model. Did you scale your "
-                "inputs/targets properly? Is your kernel choice too "
-                "strict?"
-            )
 
             if log_error_on_fail:
-                logger.exception(msg)
+                logger.exception(_TRAINING_ERROR_MESSAGE)
             else:
-                logger.warning(msg)
+                logger.warning(_TRAINING_ERROR_MESSAGE)
 
             if terminate_on_fail:
                 if not log_error_on_fail:
-                    logger.exception(msg)
+                    logger.exception(_TRAINING_ERROR_MESSAGE)
 
                 logger.critical("terminate_on_fail is true, throwing error")
                 raise ModelFittingError
 
         logger.debug("------- PARAMETER INFO AFTER TRAINING -------")
         self._log_training_debug_information()
+
+        if self._training_state_successful:
+            logger.success(f"Model trained in {timer.dt:.01f} {timer.units}")
 
     def _get_posterior(self, grid):
 
@@ -280,7 +292,7 @@ class EasyGP:
         std = np.sqrt(posterior.variance.detach().numpy().squeeze())
 
         if not self._training_state_successful:
-            logger.warning(TRAINING_WARN_MESSAGE)
+            logger.warning(_TRAINING_WARN_MESSAGE)
 
         return {
             "mean": mean,

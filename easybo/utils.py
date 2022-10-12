@@ -1,8 +1,34 @@
+from time import perf_counter
+
 import numpy as np
 import torch
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class Timer:
+    def __enter__(self):
+        self._time = perf_counter()
+        self._units = "s"
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self._time = perf_counter() - self._time
+        if self._time > 60.0:
+            self._time = self._time / 60.0
+            self._units = "m"
+        elif self._time < 1.0:
+            self._time = self._time * 1000.0
+            self._units = "ms"
+
+    @property
+    def dt(self):
+        return self._time
+
+    @property
+    def units(self):
+        return self._units
 
 
 def _to_float32_tensor(x, device=DEVICE):
