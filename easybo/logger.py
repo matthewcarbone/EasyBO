@@ -32,10 +32,16 @@ def generic_filter(names):
 def set_logger_style(
     debug=False,
     debug_simple=False,
-    stdout=True,
-    stdout_simple=True,
-    stderr=True,
-    stderr_simple=False,
+    info=True,
+    info_simple=True,
+    success=True,
+    success_simple=True,
+    warning=True,
+    warning_simple=True,
+    error=True,
+    error_simple=True,
+    critical=True,
+    critical_simple=False,
 ):
 
     logger.remove(None)
@@ -48,20 +54,44 @@ def set_logger_style(
             format=SIMPLE_LOGGER_FMT if debug_simple else LOGGER_FMT,
         )
 
-    if stdout:
+    if info:
         logger.add(
             sys.stdout,
             colorize=True,
-            filter=generic_filter(["INFO", "SUCCESS"]),
-            format=SIMPLE_LOGGER_FMT if stdout_simple else LOGGER_FMT,
+            filter=generic_filter(["INFO"]),
+            format=SIMPLE_LOGGER_FMT if info_simple else LOGGER_FMT,
         )
 
-    if stderr:
+    if success:
         logger.add(
             sys.stdout,
             colorize=True,
-            filter=generic_filter(["WARNING", "ERROR", "CRITICAL"]),
-            format=SIMPLE_LOGGER_FMT if stderr_simple else LOGGER_FMT,
+            filter=generic_filter(["SUCCESS"]),
+            format=SIMPLE_LOGGER_FMT if success_simple else LOGGER_FMT,
+        )
+
+    if warning:
+        logger.add(
+            sys.stdout,
+            colorize=True,
+            filter=generic_filter(["WARNING"]),
+            format=SIMPLE_LOGGER_FMT if warning_simple else LOGGER_FMT,
+        )
+
+    if error:
+        logger.add(
+            sys.stdout,
+            colorize=True,
+            filter=generic_filter(["ERROR"]),
+            format=SIMPLE_LOGGER_FMT if error_simple else LOGGER_FMT,
+        )
+
+    if critical:
+        logger.add(
+            sys.stdout,
+            colorize=True,
+            filter=generic_filter(["CRITICAL"]),
+            format=SIMPLE_LOGGER_FMT if critical_simple else LOGGER_FMT,
         )
 
 

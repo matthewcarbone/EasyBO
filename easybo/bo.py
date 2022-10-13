@@ -1,3 +1,6 @@
+from copy import deepcopy
+
+
 import botorch  # noqa
 from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
@@ -7,10 +10,12 @@ from botorch.utils.transforms import (
     t_batch_mode_transform,
     concatenate_pending_points,
 )
+import numpy as np
 
 # from itertools import product
 # from monty.json import MSONable
 import torch
+from tqdm import tqdm
 
 from easybo.utils import _to_float32_tensor, DEVICE
 from easybo.logger import logger, _log_warnings
@@ -262,6 +267,80 @@ def ask(
     logger.debug(f"candidates: {candidate}")
     logger.debug(f"acquisition function value: {acq_value}")
     return candidate
+
+
+def run_experiment(
+    *,
+    truth,
+    model,
+    n_experiments=100,
+    retrain_every=1,
+    save_model_at_data_multiples_of=20,
+    bounds=[[0, 1]],
+    acquisition_function="MaxVar",
+    acquisition_function_kwargs=dict(),
+    optimize_acqf_kwargs=dict(q=1, num_restarts=5, raw_samples=20),
+    weight=None,
+    weight_requires_input_dataset=False,
+    device=DEVICE,
+    pbar=True,
+):
+
+    models = []
+    train_failed_on = []
+
+    model_kwargs = deepcopy(model._initial_kwargs)
+    model_kwargs.pop("train_x")
+    model_kwargs.pop("train_y")
+    model_klass = model.__class__
+    X = deepcopy(model.train_x)
+    Y = deepcopy(model.train_y)
+
+    for experiment_number in tqdm(range(n_experiments), disable=not pbar):
+
+        if experiment_number != 0:
+            model = model_klass(train_x=X, train_y=Y, **model_kwargs)
+
+        if experiment_number % retrain_every == 0:
+            model.train_(log_error_on_fail=False, terminate_on_fail=False)
+            if not model.training_state_successful:
+                train_failed_on.append(experiment_number)
+
+        if (
+            X.shape[0] % save_model_at_data_multiples_of == 0
+            or experiment_number == 0
+        ):
+            models.append(deepcopy(model))
+
+        if weight is not None:
+            if weight_requires_input_dataset:
+
+                def _weight(x):
+                    return weight(x, torch.tensor(X, dtype=torch.double))
+
+            else:
+                _weight = weight
+
+        next_point = ask(
+            model=model,
+            bounds=bounds,
+            acquisition_function=acquisition_function,
+            acquisition_function_kwargs=acquisition_function_kwargs,
+            optimize_acqf_kwargs=optimize_acqf_kwargs,
+            weight=_weight,
+            device=device,
+        )
+
+        X = np.concatenate([X, next_point], axis=0)
+        Y = truth(X)
+        Y = Y.reshape(-1, model.train_y.shape[1])
+
+    if len(train_failed_on) > 0:
+        train_failed_on = [str(xx) for xx in train_failed_on]
+        train_failed_on = ",".join(train_failed_on)
+        logger.warning(f"Training failed on experiments: {train_failed_on}")
+
+    return models
 
 
 # class SimulatedCampaign(MSONable):

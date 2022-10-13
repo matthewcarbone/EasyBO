@@ -253,7 +253,7 @@ class EasyGP:
         self._log_training_debug_information()
 
         if self._training_state_successful:
-            logger.success(f"Model trained in {timer.dt:.01f} {timer.units}")
+            logger.success(f"Model fit in {timer.dt:.01f} {timer.units}")
 
     def _get_posterior(self, grid):
 
