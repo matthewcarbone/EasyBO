@@ -284,12 +284,10 @@ class EasyGP:
         logger.debug("------- PARAMETER INFO AFTER TRAINING -------")
         self._log_training_debug_information()
 
-        nlpd = self.nlpd()
-
         if self._training_state_successful:
             logger.success(
                 f"Model fit in {timer.dt:.01f} {timer.units}, "
-                f"NLPD: {nlpd:.02f}"
+                f"NLPD: {self.nlpd():.02f}"
             )
 
     @_log_warnings
@@ -375,6 +373,7 @@ class EasyGP:
         kwargs["train_y"] = y
 
         # Initialize...
+        logger.debug(f"Initialzing new model with keys: {kwargs.keys()}")
         new_model = self.__class__(**kwargs)
 
         # Old way -------------------------------------------------------------
@@ -535,6 +534,15 @@ class EasySingleTaskGPRegressor(EasyGP):
             }
         )
         kwargs = deepcopy({key: value for key, value in kwargs.items()})
+
+        # Weird bug here, not sure why __class__ is present in the keyword
+        # arguments
+        try:
+            kwargs.pop("__class__")
+        except KeyError:
+            pass
+
+        logger.debug(f"Initial kwargs: {kwargs.keys()}")
         super().__init__()
         self._initial_kwargs = {**self._initial_kwargs, **kwargs}
         self._device = device
