@@ -192,6 +192,38 @@ class EasyGP:
         if hasattr(model, "outcome_transform"):
             logger.debug(f"OUT TRANSFORM: {model.outcome_transform._buffers}")
 
+    def _get_posterior(self, grid):
+
+        self._model.eval()
+        self._model.likelihood.eval()
+
+        grid = _to_float32_tensor(grid, device=self.device)
+
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            return self._model.posterior(grid)
+
+    def nlpd(self, train_x=None, train_y=None):
+        """Gets the negative log predictive density of the model.
+
+        Parameters
+        ----------
+        train_x : None, array_like
+            If None, uses ``self.train_x``.
+        train_y : None, array_like
+            If None, uses ``self.train_y``.
+        """
+
+        if train_x is None:
+            train_x = self.train_x
+        train_x = _to_float32_tensor(train_x)
+
+        if train_y is None:
+            train_y = self.train_y
+        train_y = _to_float32_tensor(train_y)
+
+        posterior = self._get_posterior(train_x)
+        return -posterior.mvn.log_prob(train_y.squeeze()).item()
+
     @_log_warnings
     def train_(
         self,
@@ -252,18 +284,13 @@ class EasyGP:
         logger.debug("------- PARAMETER INFO AFTER TRAINING -------")
         self._log_training_debug_information()
 
+        nlpd = self.nlpd()
+
         if self._training_state_successful:
-            logger.success(f"Model fit in {timer.dt:.01f} {timer.units}")
-
-    def _get_posterior(self, grid):
-
-        self._model.eval()
-        self._model.likelihood.eval()
-
-        grid = _to_float32_tensor(grid, device=self.device)
-
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            return self._model.posterior(grid)
+            logger.success(
+                f"Model fit in {timer.dt:.01f} {timer.units}, "
+                f"NLPD: {nlpd:.02f}"
+            )
 
     @_log_warnings
     def predict(self, *, grid):
@@ -508,6 +535,7 @@ class EasySingleTaskGPRegressor(EasyGP):
             }
         )
         kwargs = deepcopy({key: value for key, value in kwargs.items()})
+        super().__init__()
         self._initial_kwargs = {**self._initial_kwargs, **kwargs}
         self._device = device
         d = train_x.shape[1]  # Number of features
