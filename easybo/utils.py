@@ -37,9 +37,9 @@ def _to_float32_tensor(x, device=DEVICE):
         return None
 
     if isinstance(x, np.ndarray):
-        x = torch.tensor(x.copy()).float()
+        x = torch.tensor(x.copy()).double()
 
-    x = x.clone().float()
+    x = x.clone().double()
     x = x.to(device)
     return x
 
@@ -99,7 +99,7 @@ def get_dummy_1d_sinusoidal_data(seed=123):
 
 def get_dummy_2d_data(seed=127, N=100, M=150):
 
-    np.random.seed(127)
+    np.random.seed(seed)
     idx = np.random.choice([xx for xx in range(N * M)], 20, replace=False)
     idx.sort()
 

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from functools import wraps
 import sys
 from warnings import catch_warnings
 
@@ -96,6 +97,7 @@ def set_logger_style(
 
 
 def _log_warnings(f):
+    @wraps(f)
     def wrapper(*args, **kwargs):
         with catch_warnings(record=True) as w:
             output = f(*args, **kwargs)

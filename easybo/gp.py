@@ -35,6 +35,25 @@ _TRAINING_ERROR_MESSAGE = (
 )
 
 
+def _TRAINING_ERROR_MESSAGE_NLPD(nlpd):
+    # https://stats.stackexchange.com/questions/547490/
+    # gaussian-process-regression-normalization-of-data-worsens-fit-why
+    return (
+        f"fit_gpytorch_mll() did not fail, but the NLPD {nlpd:.02e} is high. "
+        "Likely, this is due to the kernel producing extremely small length "
+        "scales and interpreting each point as delta-like. This can happen "
+        "in extremely data-limited conditions and/or when scaling your input "
+        "data to the unit hypercube is TRUE. Try using "
+        "normalize_inputs_to_unity=False in this calculation. Specifically, "
+        "look for if parameters like the raw_outputscale and raw_lengthscale "
+        "are very small (note they're on a log scale)."
+    )
+
+
+class NLPDModelFittingError(Exception):
+    ...
+
+
 class EasyGP:
     """Core base class for defining all the primary operations required for an
     "easy Gaussian Process"."""
@@ -177,20 +196,37 @@ class EasyGP:
 
         return self._get_current_train_y(untransform=True).detach().numpy()
 
-    def _log_training_debug_information(self, model=None):
+    def _get_training_debug_information(self, model=None):
         if model is None:
             model = self._model
+
+        info = {"hyperparameters": []}
 
         for p in model.named_parameters():
             p0 = p[0]
             p1 = str(p[1]).split("\n")[1]
-            logger.debug(f"{p0}: {p1}")
+            info["hyperparameters"].append(f"{p0}: {p1}")
 
         # Ensure we include the proper transforms
         if hasattr(model, "input_transform"):
-            logger.debug(f"INP TRANSFORM: {model.input_transform._buffers}")
+            tmp = model.input_transform._buffers
+            info["input_transform"] = tmp
         if hasattr(model, "outcome_transform"):
-            logger.debug(f"OUT TRANSFORM: {model.outcome_transform._buffers}")
+            tmp = model.outcome_transform._buffers
+            info["outcome_transform"] = tmp
+
+        return info
+
+    def _log_training_debug_information(self, model=None):
+        info = self._get_training_debug_information(model=model)
+        for p in info["hyperparameters"]:
+            logger.debug(p)
+
+        # Ensure we include the proper transforms
+        if "input_transform" in info.keys():
+            logger.debug(f"INP TRANSFORM: {info['input_transform']}")
+        if "outcome_transform" in info.keys():
+            logger.debug(f"OUT TRANSFORM: {info['outcome_transform']}")
 
     def _get_posterior(self, grid):
 
@@ -278,17 +314,33 @@ class EasyGP:
                 if not log_error_on_fail:
                     logger.exception(_TRAINING_ERROR_MESSAGE)
 
-                logger.critical("terminate_on_fail is true, throwing error")
+                logger.critical("terminate_on_fail is True, throwing error")
                 raise ModelFittingError
 
         logger.debug("------- PARAMETER INFO AFTER TRAINING -------")
         self._log_training_debug_information()
 
         if self._training_state_successful:
-            logger.success(
-                f"Model fit in {timer.dt:.01f} {timer.units}, "
-                f"NLPD: {self.nlpd():.02f}"
-            )
+            nlpd = self.nlpd()
+            if nlpd > 100.0:
+                self._training_state_successful = False
+                logger.info(f"Model fit in {timer.dt:.01f} {timer.units}")
+                training_info = self._get_training_debug_information()
+                logger.error(_TRAINING_ERROR_MESSAGE_NLPD(nlpd))
+                logger.info(f"model parameters: {training_info}")
+                if terminate_on_fail:
+                    logger.critical(
+                        "terminate_on_fail is True, throwing error"
+                    )
+                    raise NLPDModelFittingError
+            else:
+                xshape = list(self._get_current_train_x().shape)
+                yshape = list(self._get_current_train_y().shape)
+                check = ""  # "\u2705"
+                logger.success(
+                    f"{check} Model fit on data, shapes: {xshape} -> {yshape} "
+                    f"in {timer.dt:.01f} {timer.units}, NLPD: {nlpd:.02f}"
+                )
 
     @_log_warnings
     def predict(self, *, grid):
@@ -519,7 +571,7 @@ class EasySingleTaskGPRegressor(EasyGP):
         likelihood=gpytorch.likelihoods.GaussianLikelihood(),
         mean_module=gpytorch.means.ConstantMean(),
         covar_module=gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.MaternKernel()
+            gpytorch.kernels.MaternKernel(nu=2.5)
         ),
         normalize_inputs_to_unity=True,
         standardize_outputs=True,
@@ -530,17 +582,12 @@ class EasySingleTaskGPRegressor(EasyGP):
             {
                 key: value
                 for key, value in locals().items()
-                if key not in ["self", "kwargs"]
+                if key not in ["self", "kwargs", "__class__"]
             }
         )
-        kwargs = deepcopy({key: value for key, value in kwargs.items()})
-
-        # Weird bug here, not sure why __class__ is present in the keyword
-        # arguments
-        try:
-            kwargs.pop("__class__")
-        except KeyError:
-            pass
+        kwargs = deepcopy(
+            {key: value for key, value in kwargs.items() if key != "__class__"}
+        )
 
         logger.debug(f"Initial kwargs: {kwargs.keys()}")
         super().__init__()

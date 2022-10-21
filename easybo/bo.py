@@ -1,96 +1,23 @@
-from copy import deepcopy
-
-
 import botorch  # noqa
 from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 from botorch.acquisition.monte_carlo import MCAcquisitionFunction
+from botorch.acquisition.penalized import PenalizedAcquisitionFunction
 from botorch.optim import optimize_acqf
 from botorch.utils.transforms import (
     t_batch_mode_transform,
     concatenate_pending_points,
 )
-import numpy as np
 
-# from itertools import product
-# from monty.json import MSONable
 import torch
-from tqdm import tqdm
 
 from easybo.utils import _to_float32_tensor, DEVICE
 from easybo.logger import logger, _log_warnings
 from easybo.gp import EasyGP
 
 
-def _acquisition_function_factory_weights(cls):
-    """Intended as a decorator for adding a ``custom_weight`` attribute to the
-    provided class type. The user can set ``custom_weight`` as a function of
-    the grid coordinate, which can allow one to weight the resultant
-    acquisition function by e.g. the cost of moving a motor to a particular
-    position.
-
-    Returns
-    -------
-    type
-        As this is essentially a metaclass, this returns the object
-        ``AcqusitionFunction`` which needs to be instantiated, e.g.,
-        ``AcquisitionFunction(...)``
-    """
-
-    class AcquisitionFunction(cls):
-        def _weighted_result(self, x, acq_values):
-            """Executes the weighting scheme before sending the result of ``x``
-            to the ``super().forward()`` method.
-
-            Parameters
-            ----------
-            x : torch.tensor
-                A torch tensor of shape
-                [num_restarts or raw_samples, q, n_dimensions].
-            acq_values : torch.tensor
-                The values of the acquisition function.
-
-            Returns
-            -------
-            torch.tensor
-            """
-
-            if self._custom_weight is None:
-                return acq_values
-
-            # Otherwise, we need to multiply the weight into the last
-            # dimension element-wise
-            N = x.shape[0]
-            q = x.shape[1]
-            d = x.shape[2]
-            x_reshaped = x.reshape(-1, d)  # ~ [N x q, d]
-
-            # _custom_weight treats each dimension like x[0], x[1], etc.
-            # weights ~ [N x q]
-            weights = self._custom_weight(x_reshaped)
-            weights = weights.reshape(N, q).mean(axis=1)
-
-            return acq_values * weights
-
-        def __init__(self, *args, custom_weight=None, **kwargs):
-            super().__init__(*args, **kwargs)
-
-            # A constant does not change the behavior of the acqusition
-            # function
-            if isinstance(custom_weight, (int, float)):
-                custom_weight = None
-
-            self._custom_weight = custom_weight
-
-        def forward(self, X):
-            """Forward execution for the acquisition function. Note that
-            ``X is a set of coordinates, where the dimensions are
-            [num_restarts or raw_samples, q, dims]."""
-
-            f = super().forward(X)
-            return self._weighted_result(X, f)
-
-    return AcquisitionFunction
+class XPendingError(Exception):
+    ...
 
 
 class _MaxVariance(AnalyticAcquisitionFunction):
@@ -139,17 +66,29 @@ class _qMaxVariance(MCAcquisitionFunction):
         return ucb_samples.max(dim=-1)[0].mean(dim=0)
 
 
+CUSTOM_AQ_MAPPING = {
+    "EI": ExpectedImprovement,
+    "UCB": UpperConfidenceBound,
+    "MaxVar": _MaxVariance,
+    "MaxVariance": _MaxVariance,
+    "qMaxVar": _qMaxVariance,
+    "qMaxVariance": _qMaxVariance,
+}
+
+
 @_log_warnings
 def ask(
     *,
     model,
     bounds=[[0, 1]],
-    acquisition_function=UpperConfidenceBound,
+    acquisition_function="MaxVariance",
     X_pending=None,
     fixed_features=None,
-    acquisition_function_kwargs=dict(beta=0.1),
+    acquisition_function_kwargs=dict(),
     optimize_acqf_kwargs=dict(q=1, num_restarts=5, raw_samples=20),
-    weight=None,
+    penalty_function=None,
+    penalty_strength=0.1,
+    terminate_on_fail=True,
     device=DEVICE,
 ):
     """Asks the model to sample the next point(s) based on the current state
@@ -182,10 +121,12 @@ def ask(
         Other keyword arguments passed to the acquisition function.
     optimize_acqf_kwargs : dict, optional
         Other keyword arguments passed to ``optimize_acqf``.
-    weight : callable, optional
-        A custom weight applied to the acqusition function directly. This is
-        callable function which takes the position as input. The larger the
-        weight, the more that point is favored.
+    penalty_function : callable, optional
+        A regularization applied to the acquisition funtion directly. This
+        callable function takes the input coordinate as input. The larger
+        the value of this function, the less that point is favored.
+    penalty_strength : float, optional
+        The strength of the penalty regularization.
     device : str
         The device on which to place any arrays passed to ``ask``.
 
@@ -200,8 +141,9 @@ def ask(
         If an incorrect acqusition function name is provided.
     """
 
-    logger.debug(f"ask provided with args: {locals()}")
+    logger.debug(f"ask queried with args: {locals()}")
 
+    dims = len(bounds[0])
     bounds = torch.tensor(bounds).float().reshape(-1, 2).T
     logger.debug(f"ask bounds set to {bounds}")
 
@@ -222,15 +164,10 @@ def ask(
                 f"Acquisition function signature {acquisition_function} "
                 "not found in botorch.acquisition"
             )
-            if acquisition_function == "EI":
-                acquisition_function = ExpectedImprovement
-            elif acquisition_function == "UCB":
-                acquisition_function = UpperConfidenceBound
-            elif acquisition_function == "MaxVar":
-                acquisition_function = _MaxVariance
-            elif acquisition_function == "qMaxVar":
-                acquisition_function = _qMaxVariance
-            else:
+
+            acquisition_function = CUSTOM_AQ_MAPPING.get(acquisition_function)
+
+            if acquisition_function is None:
                 msg = (
                     "Unknown acquisition function alias "
                     f"{acquisition_function}"
@@ -242,13 +179,6 @@ def ask(
         f"acquisition function in use: {acquisition_function.__name__}"
     )
 
-    # Add custom_weight method
-    if weight is not None:
-        acquisition_function = _acquisition_function_factory_weights(
-            acquisition_function
-        )
-        acquisition_function_kwargs["custom_weight"] = weight
-
     if X_pending is not None:
         X_pending = _to_float32_tensor(X_pending, device=device)
 
@@ -258,89 +188,34 @@ def ask(
         **acquisition_function_kwargs,
     )
 
+    if X_pending is not None and not isinstance(aq, MCAcquisitionFunction):
+        klass = aq.__class__.__name__
+        klass = klass.replace("_", "")
+        logger.error(
+            "You have passed X_pending to an acquisition function that does "
+            "not inherit MCAcquisitionFunction. X_pending will be silently "
+            "ignored! You passed acqusition function "
+            f"{klass}, try e.g. q{klass}."
+        )
+        if terminate_on_fail:
+            logger.critical("terminate_on_fail is True, throwing error")
+            raise XPendingError
+
+    if penalty_function is not None:
+        aq = PenalizedAcquisitionFunction(
+            aq, penalty_function, penalty_strength
+        )
+
     candidate, acq_value = optimize_acqf(
         aq,
         bounds=bounds,
         fixed_features=fixed_features,
         **optimize_acqf_kwargs,
     )
+
     logger.debug(f"candidates: {candidate}")
     logger.debug(f"acquisition function value: {acq_value}")
     return candidate
-
-
-def run_experiment(
-    *,
-    truth,
-    model,
-    n_experiments=100,
-    retrain_every=1,
-    save_model_at_data_multiples_of=20,
-    bounds=[[0, 1]],
-    acquisition_function="MaxVar",
-    acquisition_function_kwargs=dict(),
-    optimize_acqf_kwargs=dict(q=1, num_restarts=5, raw_samples=20),
-    weight=None,
-    weight_requires_input_dataset=False,
-    device=DEVICE,
-    pbar=True,
-):
-
-    models = []
-    train_failed_on = []
-
-    model_kwargs = deepcopy(model._initial_kwargs)
-    model_kwargs.pop("train_x")
-    model_kwargs.pop("train_y")
-    model_klass = model.__class__
-    X = deepcopy(model.train_x)
-    Y = deepcopy(model.train_y)
-
-    for experiment_number in tqdm(range(n_experiments), disable=not pbar):
-
-        if experiment_number != 0:
-            model = model_klass(train_x=X, train_y=Y, **model_kwargs)
-
-        if experiment_number % retrain_every == 0:
-            model.train_(log_error_on_fail=False, terminate_on_fail=False)
-            if not model.training_state_successful:
-                train_failed_on.append(experiment_number)
-
-        if (
-            X.shape[0] % save_model_at_data_multiples_of == 0
-            or experiment_number == 0
-        ):
-            models.append(deepcopy(model))
-
-        if weight is not None:
-            if weight_requires_input_dataset:
-
-                def _weight(x):
-                    return weight(x, torch.tensor(X, dtype=torch.double))
-
-            else:
-                _weight = weight
-
-        next_point = ask(
-            model=model,
-            bounds=bounds,
-            acquisition_function=acquisition_function,
-            acquisition_function_kwargs=acquisition_function_kwargs,
-            optimize_acqf_kwargs=optimize_acqf_kwargs,
-            weight=_weight,
-            device=device,
-        )
-
-        X = np.concatenate([X, next_point], axis=0)
-        Y = truth(X)
-        Y = Y.reshape(-1, model.train_y.shape[1])
-
-    if len(train_failed_on) > 0:
-        train_failed_on = [str(xx) for xx in train_failed_on]
-        train_failed_on = ",".join(train_failed_on)
-        logger.warning(f"Training failed on experiments: {train_failed_on}")
-
-    return models
 
 
 # class SimulatedCampaign(MSONable):
