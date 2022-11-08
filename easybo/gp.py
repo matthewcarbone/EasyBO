@@ -16,6 +16,7 @@ from botorch.models.transforms.outcome import Standardize
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 import gpytorch
+from linear_operator.utils.errors import NotPSDError
 import numpy as np
 import torch
 
@@ -258,7 +259,11 @@ class EasyGP:
         train_y = _to_float32_tensor(train_y)
 
         posterior = self._get_posterior(train_x)
-        return -posterior.mvn.log_prob(train_y.squeeze()).item()
+        try:
+            _nlpd = -posterior.mvn.log_prob(train_y.squeeze()).item()
+        except NotPSDError:
+            _nlpd = 0
+        return _nlpd
 
     @_log_warnings
     def train_(
