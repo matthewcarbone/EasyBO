@@ -36,7 +36,7 @@ _TRAINING_ERROR_MESSAGE = (
 )
 
 
-def _TRAINING_ERROR_MESSAGE_NLPD(nlpd):
+def _TRAINING_WARNING_MESSAGE_NLPD(nlpd):
     # https://stats.stackexchange.com/questions/547490/
     # gaussian-process-regression-normalization-of-data-worsens-fit-why
     return (
@@ -333,7 +333,7 @@ class EasyGP:
                 self._training_state_successful = False
                 logger.info(f"Model fit in {timer.dt:.01f} {timer.units}")
                 training_info = self._get_training_debug_information()
-                logger.error(_TRAINING_ERROR_MESSAGE_NLPD(nlpd))
+                logger.warning(_TRAINING_WARNING_MESSAGE_NLPD(nlpd))
                 logger.info(f"model parameters: {training_info}")
                 if terminate_on_fail:
                     logger.critical(
