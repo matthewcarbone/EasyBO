@@ -229,7 +229,7 @@ class EasyGP:
         if "outcome_transform" in info.keys():
             logger.debug(f"OUT TRANSFORM: {info['outcome_transform']}")
 
-    def _get_posterior(self, grid):
+    def _get_posterior(self, grid, observation_noise=True):
 
         self._model.eval()
         self._model.likelihood.eval()
@@ -237,7 +237,9 @@ class EasyGP:
         grid = _to_float32_tensor(grid, device=self.device)
 
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            return self._model.posterior(grid)
+            return self._model.posterior(
+                grid, observation_noise=observation_noise
+            )
 
     def nlpd(self, train_x=None, train_y=None):
         """Gets the negative log predictive density of the model.
@@ -258,7 +260,7 @@ class EasyGP:
             train_y = self.train_y
         train_y = _to_float32_tensor(train_y)
 
-        posterior = self._get_posterior(train_x)
+        posterior = self._get_posterior(train_x, observation_noise=True)
         try:
             _nlpd = -posterior.mvn.log_prob(train_y.squeeze()).item()
         except NotPSDError:
@@ -348,7 +350,7 @@ class EasyGP:
                 )
 
     @_log_warnings
-    def predict(self, *, grid):
+    def predict(self, *, grid, observation_noise=True):
         """Runs inference on the model in eval mode.
 
         Parameters
@@ -369,7 +371,10 @@ class EasyGP:
             on the grid, can be used for further debugging/inference.
         """
 
-        posterior = self._get_posterior(grid)
+        posterior = self._get_posterior(
+            grid, observation_noise=observation_noise
+        )
+
         mean = posterior.mean.detach().numpy().squeeze()
         std = np.sqrt(posterior.variance.detach().numpy().squeeze())
 
