@@ -30,8 +30,8 @@ classifiers = [
 dependencies = [
     "numpy",
     "scipy",
-    "gpytorch",
-    "botorch",
+    "gpytorch==1.9.0",
+    "botorch==0.7.2",
     "loguru"
 ]
 
