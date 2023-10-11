@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # import argparse
-# import shutil
+import shutil
 from pathlib import Path
 
 import nox
@@ -111,15 +111,13 @@ def pylint(session: nox.Session) -> None:
 #     )
 
 
-# @nox.session
-# def build(session: nox.Session) -> None:
-#     """
-#     Build an SDist and wheel.
-#     """
+@nox.session
+def build(session: nox.Session) -> None:
+    """Build an SDist and wheel."""
 
-#     build_path = DIR.joinpath("build")
-#     if build_path.exists():
-#         shutil.rmtree(build_path)
+    build_path = DIR.joinpath("build")
+    if build_path.exists():
+        shutil.rmtree(build_path)
 
-#     session.install("build")
-#     session.run("python", "-m", "build")
+    session.install("build")
+    session.run("python", "-m", "build")
