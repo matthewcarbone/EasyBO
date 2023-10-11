@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 #
 # easybo documentation build configuration file, created by
 # sphinx-quickstart on Thu Jun 28 12:35:56 2018.
@@ -31,6 +30,8 @@
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
+from __future__ import annotations
+
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
@@ -69,17 +70,15 @@ master_doc = "index"
 
 # General information about the project.
 project = "easybo"
-copyright = (
-    "2022, Brookhaven Science Associates, LLC, Brookhaven National Laboratory"
-)
+copyright = "2022, Brookhaven Science Associates, LLC, Brookhaven National Laboratory"
 author = "Brookhaven National Laboratory"
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
 # built documents.
 #
-import sys
 import os
+import sys
 
 basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, basedir)

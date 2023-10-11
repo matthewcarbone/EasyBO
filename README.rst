@@ -5,7 +5,7 @@ EasyBO
 
 **Warning: this work is still in pre-release and breaking changes wil be common!**
 
-**EasyBO** is a Python library designed to make Bayesian optimization and Gaussian Process modeling really `easy`! 
+**EasyBO** is a Python library designed to make Bayesian optimization and Gaussian Process modeling really `easy`!
 
 Plenty of excellent codes already exist to perform Bayesian optimization and Gaussian Process surrogate modeling. For Gaussian Processes, these involve in no particular order, these include `scikit learn <https://scikit-learn.org/stable/modules/gaussian_process.html>`__, `GPyTorch <https://gpytorch.ai>`__, `GPCam <https://gpcam.readthedocs.io/en/latest/index.html>`__, and many others. There's even a `Wikipedia page <https://en.wikipedia.org/wiki/Comparison_of_Gaussian_process_software>`__ dedicated to documenting the different codes and their various strengths and weaknesses. In the space of Bayesian optimization there are e.g. `GPyOpt <https://sheffieldml.github.io/GPyOpt/>`__, `BoTorch <https://botorch.org>`__, and some others.
 

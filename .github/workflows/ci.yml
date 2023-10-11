@@ -3,10 +3,10 @@ name: CI pipeline
 on:
   push:
     branches:
-      - 'master'
+      - "master"
   pull_request:
     branches:
-      - 'master'
+      - "master"
 
 jobs:
   tests:
@@ -17,19 +17,18 @@ jobs:
         python-version: [3.9]
 
     steps:
+      - uses: actions/checkout@v2
 
-    - uses: actions/checkout@v2
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Install requirements
+        run: bash scripts/install_requirements.sh core tests
 
-    - name: Install requirements 
-      run: bash scripts/install_requirements.sh core tests
-
-    - name: Run tests
-      run: pytest -v --cov --cov-report xml easybo/_tests
+      - name: Run tests
+        run: pytest -v --cov --cov-report xml easybo/_tests
 
     # - name: Upload code coverage
     #   uses: codecov/codecov-action@v2
